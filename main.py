@@ -1,125 +1,130 @@
-import os
-import time
-import threading
-from flask import Flask
-import telebot
+import os, telebot, requests, threading, urllib.parse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
 
-app = Flask(__name__)
+# Keep bot alive
+app = Flask('')
 @app.route('/')
-def home():
-    return "Movie Bot Running"
+def home(): return "Film4you Bot Running - All Features OK"
+threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8099)).start()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TMDB_KEY = os.environ.get("TMDB_KEY")
+DOWNLOAD_SITE = os.environ.get("DOWNLOAD_SITE") or "https://t.me/FSearch4ubot"
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ================= OLD MOVIE DATABASE - SAME FORMAT =================
-MOVIES = {
-    "animal": {
-        "file_id": "BAACAgQAAxkBAA...", # Replace with your real file_id
-        "name": "Animal 2023",
-        "caption": (
-            "🎬 **Movie: Animal (2023)**\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "📀 Quality: 1080p HDRip\n"
-            "🔊 Language: Hindi Dubbed\n"
-            "⭐ IMDb Rating: 7.2/10\n"
-            "📁 Size: 2.1GB\n"
-            "🎭 Genre: Action, Crime\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "⏰ Note: File will auto-delete in 10 minutes\n"
-            "💾 Please save/forward it"
-        )
-    },
-    "jawan": {
-        "file_id": "BAACAgQAAxkBAA...2",
-        "name": "Jawan 2023",
-        "caption": (
-            "🎬 **Movie: Jawan (2023)**\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "📀 Quality: 1080p HDRip\n"
-            "🔊 Language: Hindi\n"
-            "⭐ IMDb Rating: 7.5/10\n"
-            "📁 Size: 1.9GB\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "⏰ Note: Auto-delete in 10 minutes"
-        )
-    }
-}
-# ===================================================================
-
-def delete_after_10_min(chat_id, message_id):
-    time.sleep(600) # 600 seconds = 10 minutes
+# --- TMDB Functions ---
+def tmdb_get(path, params={}):
+    params['api_key'] = TMDB_KEY
     try:
-        bot.delete_message(chat_id, message_id)
-        bot.send_message(chat_id, "⏰ File auto-deleted after 10 minutes. Search again or click poster link to get it back.")
-    except Exception as e:
-        print(e)
+        r = requests.get(f"https://api.themoviedb.org/3{path}", params=params, timeout=10)
+        return r.json()
+    except:
+        return {}
 
-@bot.message_handler(commands=['start'])
-def handle_start(message):
-    parts = message.text.split()
+def get_trailer(movie_id, mtype="movie"):
+    data = tmdb_get(f"/{mtype}/{movie_id}/videos")
+    for v in data.get('results', []):
+        if v['type'] == 'Trailer' and v['site'] == 'YouTube':
+            return f"https://youtu.be/{v['key']}"
+    return None
 
-    # NEW FEATURE: Deep link from poster - /start animal
-    if len(parts) > 1:
-        code = parts[1].lower()
-        if code in MOVIES:
-            movie = MOVIES[code]
-            sent_msg = bot.send_document(
-                message.chat.id,
-                movie["file_id"],
-                caption=movie["caption"],
-                parse_mode="Markdown"
-            )
-            threading.Thread(target=delete_after_10_min, args=(message.chat.id, sent_msg.message_id), daemon=True).start()
-            return
-        else:
-            bot.send_message(message.chat.id, "Movie not found.")
-            return
+def search_best(query):
+    # 1. Movie pehle dhoondo
+    mov = tmdb_get("/search/movie", {"query": query})
+    if mov.get('results'):
+        mov['results'][0]['_type'] = 'movie'
+        return mov['results'][0]
+    # 2. Nahi mila to Web Series dhoondo
+    tv = tmdb_get("/search/tv", {"query": query})
+    if tv.get('results'):
+        tv['results'][0]['_type'] = 'tv'
+        return tv['results'][0]
+    return None
 
-    bot.send_message(message.chat.id, "👋 Welcome!\n\nSend movie name like `animal` or `jawan`", parse_mode="Markdown")
+# --- Welcome ---
+@bot.message_handler(content_types=['new_chat_members'])
+def welcome(m):
+    for u in m.new_chat_members:
+        if u.id == bot.get_me().id:
+            bot.send_message(m.chat.id, "Thanks for adding me! Movie naam bhejo, mai sab dunga.")
+            continue
+        bot.send_message(m.chat.id, f"🎉 Welcome {u.first_name}!\n📽️ Film4you me swagat hai!\n🎬 Koi bhi Movie/Series ka naam likho.")
 
-@bot.message_handler(content_types=['text'])
-def handle_search(message):
-    if message.text.startswith('/'):
+@bot.message_handler(commands=['start','help'])
+def start(m):
+    bot.reply_to(m, "🎬 *Film4you Bot*\n\nMovie ya Web Series ka naam bhejo\nExample: `KGF, Mirzapur, Avengers`\n\nMai dunga:\n✅ Poster\n✅ Trailer\n✅ Release Date\n✅ Rating\n✅ Download\n✅ Where to Watch", parse_mode="Markdown")
+
+# --- Main Search ---
+@bot.message_handler(func=lambda m: True, content_types=['text'])
+def handle(m):
+    if not m.text or m.text.startswith('/'): return
+    text = m.text.strip()
+    if len(text) < 2 or len(text) > 60: return
+    if 'http' in text: return
+
+    item = search_best(text)
+    if not item:
         return
 
-    query = message.text.lower().strip()
+    title = item.get('title') or item.get('name')
+    is_movie = item['_type'] == 'movie'
+    release_date = item.get('release_date') or item.get('first_air_date') or "N/A"
+    year = release_date[:4] if len(release_date) >= 4 else "N/A"
+    rating = item.get('vote_average', 0)
+    overview = item.get('overview', 'Story not available.')[:400]
+    poster = item.get('poster_path')
 
-    for code, movie in MOVIES.items():
-        if query in movie["name"].lower() or query == code:
+    # Trailer nikalo
+    trailer_url = get_trailer(item['id'], item['_type'])
 
-            # Deep link for poster button
-            bot_username = bot.get_me().username
-            deep_link = f"https://t.me/{bot_username}?start={code}"
+    # --- BUTTONS ---
+    markup = InlineKeyboardMarkup()
 
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📥 Direct Download Link", url=deep_link))
+    # Download button - Tumhare DOWNLOAD_SITE Secret se
+    download_link = f"{DOWNLOAD_SITE}?start={urllib.parse.quote(title)}" if "t.me" in DOWNLOAD_SITE else DOWNLOAD_SITE
+    markup.row(InlineKeyboardButton("💾 DOWNLOAD", url=download_link))
 
-            # OLD FORMAT: Send with full caption + details
-            sent_msg = bot.send_document(
-                message.chat.id,
-                movie["file_id"],
-                caption=movie["caption"],
-                parse_mode="Markdown",
-                reply_markup=markup
-            )
+    if trailer_url:
+        markup.row(InlineKeyboardButton("▶️ TRAILER", url=trailer_url))
+    else:
+        yt_search = f"https://www.youtube.com/results?search_query={urllib.parse.quote(title + ' trailer')}"
+        markup.row(InlineKeyboardButton("▶️ TRAILER (YouTube)", url=yt_search))
 
-            # Auto delete after 10 min
-            threading.Thread(target=delete_after_10_min, args=(message.chat.id, sent_msg.message_id), daemon=True).start()
-            return
+    # Where to Watch
+    ott_link = f"https://www.justwatch.com/in/search?q={urllib.parse.quote(title)}"
+    markup.row(InlineKeyboardButton("📍 WHERE TO WATCH (OTT)", url=ott_link))
 
-    bot.send_message(message.chat.id, "❌ Movie not found. Try: animal, jawan")
+    google_link = f"https://www.google.com/search?q={urllib.parse.quote(title + ' movie')}"
+    markup.row(InlineKeyboardButton("🔍 MORE INFO (Google)", url=google_link))
 
-# Helper to get file_id
-@bot.message_handler(content_types=['video', 'document'])
-def handle_file(message):
-    fid = message.video.file_id if message.video else message.document.file_id
-    bot.reply_to(message, f"File ID:\n`{fid}`", parse_mode="Markdown")
+    # --- CAPTION ---
+    type_icon = "🎬 MOVIE" if is_movie else "📺 WEB SERIES"
+    cap = f"""
+{type_icon}: *{title}*
 
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+📅 *Release Date:* {release_date}
+⭐ *Rating:* {rating}/10
+🎭 *Type:* {'Movie' if is_movie else 'Web Series'}
+📆 *Year:* {year}
 
-if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    bot.infinity_polling(none_stop=True)
+📖 *Story:*
+_{overview}..._
+
+🔎 *You Searched:* `{text}`
+"""
+
+    try:
+        if poster:
+            bot.send_photo(m.chat.id, f"https://image.tmdb.org/t/p/w500{poster}", caption=cap, parse_mode="Markdown", reply_markup=markup)
+        else:
+            bot.send_message(m.chat.id, cap, parse_mode="Markdown", reply_markup=markup)
+    except Exception as e:
+        print(e)
+        try:
+            bot.send_message(m.chat.id, cap, parse_mode="Markdown", reply_markup=markup)
+        except: pass
+
+print("✅ Bot Started with Trailer + Release Date + Download + OTT")
+bot.infinity_polling()
