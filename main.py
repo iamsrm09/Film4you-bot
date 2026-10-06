@@ -1,4 +1,4 @@
-import os, threading, logging, json, time, io
+import os, threading, logging, json, time, io, re
 from flask import Flask
 import telebot, requests
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -33,7 +33,6 @@ def save_db():
 
 def search_tmdb(query):
     try:
-        # Clean query for search
         clean_q = query.split('.')[0].replace('_',' ').strip()
         r = requests.get(f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_KEY}&query={quote_plus(clean_q)}", timeout=15).json()
         if r.get("results"):
@@ -43,13 +42,39 @@ def search_tmdb(query):
     return None
 
 def find_file(query):
-    q = query.lower()
+    q = query.lower().strip()
     if q in movie_db:
         return movie_db[q]
+
+    best_match = None
+    best_score = 0
+
     for name, mid in movie_db.items():
-        if q in name or name in q:
+        name_low = name.lower()
+        if q == name_low:
             return mid
-    return None
+
+        q_words = q.split()
+        score = 0
+        for word in q_words:
+            if word in name_low:
+                score += 1
+
+        if score == len(q_words):
+            q_num = re.findall(r'\d+', q)
+            name_num = re.findall(r'\d+', name_low)
+
+            if q_num and name_num:
+                if q_num[0] == name_num[0]:
+                    return mid
+                else:
+                    continue
+
+            if score > best_score:
+                best_score = score
+                best_match = mid
+
+    return best_match
 
 @bot.message_handler(content_types=['document', 'video'])
 def handle_file(message):
@@ -67,7 +92,6 @@ def handle_file(message):
             rating = tmdb.get('vote_average', 'N/A')
             date = tmdb.get('release_date', 'N/A')
             overview = tmdb.get('overview', '')[:800]
-            # Removed markdown symbols to fix 400 error
             final_caption = f"🎬 {title}\n⭐ Rating: {rating}/10\n📅 Release: {date}\n\n{overview}"
 
             poster = tmdb.get('poster_path')
@@ -85,7 +109,6 @@ def handle_file(message):
 
         thumb_file = open(thumb_path, "rb") if thumb_path and os.path.exists(thumb_path) else None
 
-        # Retry logic for 429 error
         sent = None
         for attempt in range(4):
             try:
@@ -99,7 +122,6 @@ def handle_file(message):
                 if "429" in err or "Too Many Requests" in err:
                     wait_time = 15
                     try:
-                        # Extract wait time from error message
                         if "retry after" in err:
                             wait_time = int(err.split("retry after ")[1].split()[0]) + 2
                     except:
@@ -119,31 +141,38 @@ def handle_file(message):
                 pass
 
         if not sent:
-            bot.reply_to(message, "❌ Telegram is busy (429). Please try again after 1 minute.")
+            bot.reply_to(message, "Telegram is busy (429). Please try again after 1 minute.")
             return
 
         movie_db[raw_name.lower()] = sent.message_id
         movie_db[clean_name.lower()] = sent.message_id
         save_db()
 
-        bot.reply_to(message, f"✅ Saved: {clean_name}\nNow when anyone downloads, they will get TMDB Thumbnail + Description.")
+        bot.reply_to(message, f"Saved: {clean_name}\nNow thumbnail + description will come on download.")
 
     except Exception as e:
         print(f"Handle file error: {e}")
-        bot.reply_to(message, f"❌ Failed: {e}")
+        bot.reply_to(message, f"Failed: {e}")
 
-@bot.message_handler(commands=['start','help','db'])
-def cmds(message):
-    if message.text.startswith('/db'):
-        if not movie_db:
-            bot.send_message(message.chat.id, "Database is empty. Send me a movie file directly.")
-        else:
-            txt = "Saved Movies:\n"
-            for k in list(movie_db.keys())[:30]:
-                txt += f"- {k}\n"
-            bot.send_message(message.chat.id, txt)
-        return
-    bot.send_message(message.chat.id, "🎬 Film4you Ready!\nSend any movie name.\n\nTo add a movie, send me a video/file directly with the movie name in caption.")
+@bot.message_handler(commands=['start','help'])
+def welcome(message):
+    text = (
+        "🎬 Welcome to Film4you Bot!\n\n"
+        "Just send me any movie name and I will send you the movie.\n\n"
+        "Example: KGF 2, Avatar 2, Pathaan\n\n"
+        "Search is now 100% accurate for parts like KGF 1 and KGF 2."
+    )
+    bot.send_message(message.chat.id, text)
+
+@bot.message_handler(commands=['db'])
+def db_cmd(message):
+    if not movie_db:
+        bot.send_message(message.chat.id, "Database is empty. Send me a movie file directly.")
+    else:
+        txt = "Saved Movies:\n"
+        for k in list(movie_db.keys())[:30]:
+            txt += f"- {k}\n"
+        bot.send_message(message.chat.id, txt)
 
 @bot.message_handler(func=lambda m: True)
 def search_handle(message):
@@ -159,7 +188,7 @@ def search_handle(message):
         if file_id:
             bot.copy_message(message.chat.id, DATABASE_CHANNEL, file_id)
             return
-        bot.send_message(message.chat.id, f"❌ '{query}' not found.")
+        bot.send_message(message.chat.id, f"'{query}' not found in database.")
         return
 
     title = tmdb.get('title')
@@ -186,7 +215,7 @@ def dl(call):
     try:
         mid = int(call.data.split('_')[1])
         bot.copy_message(call.message.chat.id, DATABASE_CHANNEL, mid)
-        bot.answer_callback_query(call.id, "File sent ✅")
+        bot.answer_callback_query(call.id, "File sent")
     except Exception as e:
         bot.answer_callback_query(call.id, f"Error: {e}")
 
