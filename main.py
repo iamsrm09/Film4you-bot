@@ -30,19 +30,6 @@ def save_db():
     with open(DB_FILE, 'w') as f:
         json.dump(movie_db, f)
 
-@bot.message_handler(content_types=['document', 'video'])
-def handle_file(message):
-    file_name = message.caption or (message.document.file_name if message.document else "video")
-    try:
-        sent = bot.copy_message(DATABASE_CHANNEL, message.chat.id, message.message_id)
-        movie_db[file_name.lower()] = sent.message_id
-        short = file_name.split('.')[0].lower()
-        movie_db[short] = sent.message_id
-        save_db()
-        bot.reply_to(message, f"✅ Saved: {file_name}\nID: {sent.message_id}\nNow anyone searching this name will get the download button.")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Failed to forward to channel. Make bot admin in channel -1004341107282\nError: {e}")
-
 def search_tmdb(query):
     try:
         r = requests.get(f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_KEY}&query={query}", timeout=15).json()
@@ -57,6 +44,55 @@ def find_file(query):
         if q in name or name in q:
             return mid
     return None
+
+# --- UPDATED PART ONLY - Auto Thumbnail + Description, File Same ---
+@bot.message_handler(content_types=['document', 'video'])
+def handle_file(message):
+    file_name = message.caption or (message.document.file_name if message.document else "video")
+    movie_name = file_name.split('.')[0].strip()
+
+    tmdb = search_tmdb(movie_name)
+
+    try:
+        thumb = None
+        final_caption = file_name
+
+        if tmdb:
+            title = tmdb.get('title')
+            rating = tmdb.get('vote_average')
+            date = tmdb.get('release_date','N/A')
+            overview = tmdb.get('overview','')[:600]
+            final_caption = f"🎬 *{title}*\n⭐ Rating: {rating}/10\n📅 Release: {date}\n\n{overview}"
+
+            poster_path = tmdb.get('poster_path')
+            if poster_path:
+                try:
+                    poster_url = f"https://image.tmdb.org/t/p/w300{poster_path}"
+                    resp = requests.get(poster_url, timeout=15)
+                    if resp.status_code == 200:
+                        open("thumb.jpg","wb").write(resp.content)
+                        thumb = open("thumb.jpg","rb")
+                except:
+                    thumb = None
+
+        # Same file, but with new thumb + new caption
+        if message.document:
+            sent = bot.send_document(DATABASE_CHANNEL, message.document.file_id, thumb=thumb, caption=final_caption, parse_mode="Markdown")
+        else:
+            sent = bot.send_video(DATABASE_CHANNEL, message.video.file_id, thumb=thumb, caption=final_caption, parse_mode="Markdown", supports_streaming=True)
+
+        if thumb:
+            thumb.close()
+
+        movie_db[file_name.lower()] = sent.message_id
+        short = file_name.split('.')[0].lower()
+        movie_db[short] = sent.message_id
+        save_db()
+
+        bot.reply_to(message, f"✅ Saved with Thumbnail & Description: {file_name}\nID: {sent.message_id}")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Failed to forward to channel. Make bot admin in channel -1004341107282\nError: {e}")
 
 @bot.message_handler(commands=['start','help','db'])
 def cmds(message):
@@ -119,3 +155,4 @@ def run_flask():
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     bot.infinity_polling()
+    
