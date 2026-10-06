@@ -1,6 +1,7 @@
 import os
 import threading
 import logging
+import json
 from flask import Flask
 import telebot
 import requests
@@ -17,32 +18,49 @@ def home():
     return "Film4you Bot is Alive! ✅"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_CHANNEL = -1006053499724
+DATABASE_CHANNEL = -1004341107282
 TMDB_KEY = os.getenv("TMDB_KEY") or os.getenv("TMDB_TOKEN")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- Ye tumhara Database banega ---
+DB_FILE = "movies.json"
 movie_database = {}
 
-@bot.channel_post_handler(content_types=['document', 'video'])
+def load_db():
+    global movie_database
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, 'r') as f:
+                movie_database = json.load(f)
+        except:
+            movie_database = {}
+
+def save_db():
+    try:
+        with open(DB_FILE, 'w') as f:
+            json.dump(movie_database, f)
+    except Exception as e:
+        logger.error(f"DB Save Error: {e}")
+
+load_db()
+
+@bot.channel_post_handler(content_types=['document', 'video', 'photo'])
 def save_movie(message):
-    # Jab tum channel me movie daloge to bot yaad kar lega
     file_name = ""
     if message.document:
-        file_name = message.document.file_name
+        file_name = message.document.file_name or message.caption or ""
     elif message.video:
-        file_name = message.caption or message.video.file_name or ""
+        file_name = message.video.file_name or message.caption or ""
     else:
         file_name = message.caption or ""
-
     if file_name:
         key = file_name.lower()
         movie_database[key] = message.message_id
-        # Short name bhi save karo
-        short = file_name.split('.')[0].lower()
-        movie_database[short] = message.message_id
-        logger.info(f"Saved: {file_name} -> {message.message_id}")
+        short = file_name.split('.')[0].lower().strip()
+        if short:
+            movie_database[short] = message.message_id
+        save_db()
+        logger.info(f"SAVED: {file_name} -> {message.message_id}")
 
 def search_tmdb_movie(query):
     try:
@@ -56,7 +74,9 @@ def search_tmdb_movie(query):
     return None
 
 def find_in_database(query):
-    q = query.lower()
+    q = query.lower().strip()
+    if q in movie_database:
+        return movie_database[q]
     for name, msg_id in movie_database.items():
         if q in name:
             return msg_id
@@ -64,10 +84,7 @@ def find_in_database(query):
 
 @bot.message_handler(commands=['start', 'help'])
 def start_cmd(message):
-    bot.send_message(message.chat.id,
-        "🎬 *Film4you Bot Ready!*\n\nKoi bhi Movie ka naam bhejo.\nEx: KGF, Avengers, Pathaan\n\nTrending ke liye /trending bhejo",
-        parse_mode="Markdown"
-    )
+    bot.send_message(message.chat.id, "🎬 *Film4you Bot Ready!*\n\nKoi bhi Movie ka naam bhejo.\nEx: KGF, Avengers, Pathaan", parse_mode="Markdown")
 
 @bot.message_handler(commands=['trending'])
 def trending_cmd(message):
@@ -78,7 +95,6 @@ def trending_cmd(message):
         text = "🔥 *Trending Movies Today:*\n\n"
         for i, m in enumerate(movies, 1):
             text += f"{i}. {m.get('title')} - ⭐ {m.get('vote_average')}/10\n"
-        text += "\nNaam bhejo download ke liye!"
         bot.send_message(message.chat.id, text, parse_mode="Markdown")
     except:
         bot.send_message(message.chat.id, "Error aa gaya trending me.")
@@ -90,35 +106,31 @@ def handle_all(message):
     query = message.text.strip()
     if len(query) < 2:
         return
-
     bot.send_chat_action(message.chat.id, 'typing')
-
-    # 1. Pehle apne Channel Database me dhoondo
     db_msg_id = find_in_database(query)
-
     movie = search_tmdb_movie(query)
     if not movie:
+        if db_msg_id:
+            try:
+                bot.copy_message(message.chat.id, DATABASE_CHANNEL, db_msg_id)
+                return
+            except Exception as e:
+                logger.error(f"Direct send failed: {e}")
         bot.send_message(message.chat.id, f"❌ '{query}' nahi mili.")
         return
-
     title = movie.get('title')
     rating = movie.get('vote_average')
     date = movie.get('release_date', 'N/A')
     overview = (movie.get('overview') or 'Story available nahi hai.')[:450]
     poster_path = movie.get('poster_path')
-
     caption = f"🎬 *{title}*\n⭐ Rating: {rating}/10\n📅 Release: {date}\n\n📖 {overview}"
     if db_msg_id:
         caption += f"\n\n✅ *Download Available Hai!*"
-
     markup = InlineKeyboardMarkup()
     if db_msg_id:
-        # Direct download link
         markup.row(InlineKeyboardButton("📥 DOWNLOAD NOW", callback_data=f"dl_{db_msg_id}"))
-
     markup.row(InlineKeyboardButton("📍 Where to Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(title)}"))
     markup.row(InlineKeyboardButton("▶️ Trailer Dekho", url=f"https://www.youtube.com/results?search_query={quote_plus(title + ' trailer')}"))
-
     try:
         if poster_path:
             poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
@@ -132,30 +144,15 @@ def handle_all(message):
 def download_callback(call):
     try:
         msg_id = int(call.data.replace('dl_', ''))
-        @bot.callback_query_handler(func=lambda call: call.data.startswith('dl_'))
-def download_callback(call):
-    try:
-        msg_id = int(call.data.replace('dl_', ''))
-        logger.info(f"Trying to forward {msg_id} from {DATABASE_CHANNEL} to {call.message.chat.id}")
-        bot.forward_message(call.message.chat.id, DATABASE_CHANNEL, msg_id)
-        # Copy bhi try karo agar forward fail ho
-    except Exception as e:
-        logger.error(f"FORWARD FAILED: {e}")
-        try:
-            # Dusra tareeka - copy message
-            bot.copy_message(call.message.chat.id, DATABASE_CHANNEL, msg_id)
-            bot.answer_callback_query(call.id, "File bhej diya! ✅")
-            return
-        except Exception as e2:
-            logger.error(f"COPY FAILED: {e2}")
-            bot.send_message(call.message.chat.id, f"Error: Bot ko channel me Admin banao aur 'Post Message' ka permission do. Error: {e2}")
-        return
-    bot.answer_callback_query(call.id, "File bhej diya! ✅")
-        bot.forward_message(call.message.chat.id, DATABASE_CHANNEL, msg_id)
+        bot.copy_message(call.message.chat.id, DATABASE_CHANNEL, msg_id)
         bot.answer_callback_query(call.id, "File bhej diya! ✅")
     except Exception as e:
-        bot.answer_callback_query(call.id, "Error, Admin se contact karo.")
-        logger.error(f"Download Error: {e}")
+        logger.error(f"COPY FAILED: {e}")
+        try:
+            bot.forward_message(call.message.chat.id, DATABASE_CHANNEL, msg_id)
+            bot.answer_callback_query(call.id, "File bhej diya! ✅")
+        except Exception as e2:
+            bot.send_message(call.message.chat.id, f"❌ Forward nahi ho raha. Bot ko channel -1004341107282 me Admin banao.\nError: {e2}")
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
