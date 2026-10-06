@@ -43,42 +43,46 @@ def search_tmdb(query):
 
 def find_file(query):
     q = query.lower().strip()
+
+    # 1. Exact match first
     if q in movie_db:
         return movie_db[q]
-    for name, mid in movie_db.items():
-        if q == name.lower():
-            return mid
-    return None
 
-def find_all_parts(query):
-    q = query.lower().strip()
-    q_base = re.sub(r'\d+', '', q).strip()
-    if not q_base:
-        q_base = q
-
-    results = {}
+    best_match = None
+    best_score = 0
 
     for name, mid in movie_db.items():
         name_low = name.lower()
-        if q_base in name_low:
-            nums = re.findall(r'\d+', name_low)
-            part_num = nums[0] if nums else ""
 
-            if q!= q_base:
-                if q in name_low:
-                    return {part_num: mid}
-            else:
-                if part_num == "":
-                    part_num = "1" if "1" not in results else str(len(results)+1)
-                if part_num not in results:
-                    results[part_num] = mid
+        if q == name_low:
+            return mid
 
-    if not results:
-        single = find_file(query)
-        if single:
-            return {"": single}
+        q_words = q.split()
+        score = 0
+        for word in q_words:
+            if word in name_low:
+                score += 1
 
-    return results
+        if score == len(q_words):
+            q_num = re.findall(r'\d+', q)
+            name_num = re.findall(r'\d+', name_low)
+
+            if q_num and name_num:
+                if q_num[0] == name_num[0]:
+                    return mid
+                else:
+                    continue
+            if q_num and not name_num:
+                continue
+            if not q_num and name_num:
+                # agar user ne bina number ke search kiya to pehla wala hi do
+                pass
+
+            if score > best_score:
+                best_score = score
+                best_match = mid
+
+    return best_match
 
 @bot.message_handler(content_types=['document', 'video'])
 def handle_file(message):
@@ -163,8 +167,7 @@ def welcome(message):
     text = (
         "🎬 Welcome to Film4you Bot!\n\n"
         "Just send me any movie name and I will send you the movie.\n\n"
-        "Example: KGF 2, Avatar 2, Pathaan\n\n"
-        "Search is now 100% accurate for parts like KGF 1 and KGF 2."
+        "Example: KGF Chapter 1, KGF Chapter 2, Pathaan"
     )
     bot.send_message(message.chat.id, text)
 
@@ -185,63 +188,30 @@ def search_handle(message):
     query = message.text.strip()
     bot.send_chat_action(message.chat.id, 'typing')
 
-    all_parts = find_all_parts(query)
+    file_id = find_file(query)
     tmdb = search_tmdb(query)
 
-    if not tmdb and not all_parts:
+    if not tmdb:
+        if file_id:
+            bot.copy_message(message.chat.id, DATABASE_CHANNEL, file_id)
+            return
         bot.send_message(message.chat.id, f"'{query}' not found in database.")
         return
 
-    if tmdb:
-        title = tmdb.get('title', query)
-        overview = tmdb.get('overview','')[:400]
-        caption = f"🎬 {title}\n⭐ {tmdb.get('vote_average')}/10\n📅 {tmdb.get('release_date')}\n\n{overview}"
-    else:
-        caption = f"🎬 {query}\n"
+    title = tmdb.get('title')
+    overview = tmdb.get('overview','')[:400]
+    caption = f"🎬 {title}\n⭐ {tmdb.get('vote_average')}/10\n📅 {tmdb.get('release_date')}\n\n{overview}"
 
     markup = InlineKeyboardMarkup()
-
-    if all_parts:
+    if file_id:
         caption += "\n\n✅ Download Available!"
-        row = []
-        for part_num in sorted(all_parts.keys(), key=lambda x: int(x) if x.isdigit() else 0):
-            mid = all_parts[part_num]
-            if len(all_parts) == 1:
-                if part_num == "":
-                    btn_text = "📥 DOWNLOAD NOW"
-                else:
-                    btn_text = f"📥 {part_num}"
-                    if not part_num.isdigit():
-                        btn_text = "📥 DOWNLOAD NOW"
-                    else:
-                        btn_text = f"📥 {part_num}"
-                        # Special case for 1,2,3
-                        btn_text = f"{part_num}"
-                        if part_num.isdigit():
-                            btn_text = f"{part_num}"
-                        # Final format as you asked
-                        btn_text = f"{part_num}"
-            else:
-                btn_text = f"{part_num}"
-
-            # As you asked, button pe sirf 1 2 3 likhna hai
-            display_text = part_num if part_num else "DOWNLOAD"
-            if len(all_parts) == 1 and not part_num.isdigit():
-                display_text = "DOWNLOAD"
-
-            row.append(InlineKeyboardButton(display_text, callback_data=f"dl_{mid}"))
-            if len(row) == 3:
-                markup.row(*row)
-                row = []
-        if row:
-            markup.row(*row)
+        markup.row(InlineKeyboardButton("📥 DOWNLOAD NOW", callback_data=f"dl_{file_id}"))
     else:
         caption += "\n\n❌ File for this movie is not added yet."
 
-    if tmdb:
-        markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(title+' trailer')}"))
+    markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(title+' trailer')}"))
 
-    poster = tmdb.get('poster_path') if tmdb else None
+    poster = tmdb.get('poster_path')
     if poster:
         bot.send_photo(message.chat.id, f"https://image.tmdb.org/t/p/w500{poster}", caption=caption, reply_markup=markup)
     else:
