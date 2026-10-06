@@ -14,7 +14,7 @@ def home():
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_CHANNEL = -1004341107282
 TMDB_KEY = os.getenv("TMDB_KEY") or os.getenv("TMDB_TOKEN")
-ADMIN_ID = None # apna telegram ID yahan daal sakte ho
+ADMIN_ID = None
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -30,21 +30,18 @@ def save_db():
     with open(DB_FILE, 'w') as f:
         json.dump(movie_db, f)
 
-# 1. AGAR TUM BOT KO DIRECT MOVIE BHEJTE HO
 @bot.message_handler(content_types=['document', 'video'])
 def handle_file(message):
     file_name = message.caption or (message.document.file_name if message.document else "video")
-    # Channel me bhejo
     try:
         sent = bot.copy_message(DATABASE_CHANNEL, message.chat.id, message.message_id)
         movie_db[file_name.lower()] = sent.message_id
-        # short name
         short = file_name.split('.')[0].lower()
         movie_db[short] = sent.message_id
         save_db()
-        bot.reply_to(message, f"✅ Save ho gayi: {file_name}\nID: {sent.message_id}\nAb koi bhi us naam se search karega to Download ayega.")
+        bot.reply_to(message, f"✅ Saved: {file_name}\nID: {sent.message_id}\nNow anyone searching this name will get the download button.")
     except Exception as e:
-        bot.reply_to(message, f"❌ Channel me forward nahi hua. Bot ko channel -1004341107282 me Admin banao.\nError: {e}")
+        bot.reply_to(message, f"❌ Failed to forward to channel. Make bot admin in channel -1004341107282\nError: {e}")
 
 def search_tmdb(query):
     try:
@@ -65,14 +62,14 @@ def find_file(query):
 def cmds(message):
     if message.text.startswith('/db'):
         if not movie_db:
-            bot.send_message(message.chat.id, "Database khali hai. Mujhe direct movie bhejo.")
+            bot.send_message(message.chat.id, "Database is empty. Send me a movie file directly.")
         else:
             txt = "Saved Movies:\n"
             for k in list(movie_db.keys())[:30]:
                 txt += f"- {k}\n"
             bot.send_message(message.chat.id, txt)
         return
-    bot.send_message(message.chat.id, "🎬 Film4you Ready!\nMovie ka naam bhejo.\n\nMovie add karne ke liye mujhe direct video/file bhejo caption ke saath.")
+    bot.send_message(message.chat.id, "🎬 Film4you Ready!\nSend any movie name.\n\nTo add a movie, send me a video/file directly with the movie name in caption.")
 
 @bot.message_handler(func=lambda m: True)
 def search_handle(message):
@@ -87,7 +84,7 @@ def search_handle(message):
         if file_id:
             bot.copy_message(message.chat.id, DATABASE_CHANNEL, file_id)
             return
-        bot.send_message(message.chat.id, f"'{query}' nahi mili")
+        bot.send_message(message.chat.id, f"❌ '{query}' not found.")
         return
 
     title = tmdb.get('title')
@@ -98,7 +95,7 @@ def search_handle(message):
         caption += "\n\n✅ Download Available!"
         markup.row(InlineKeyboardButton("📥 DOWNLOAD NOW", callback_data=f"dl_{file_id}"))
     else:
-        caption += "\n\n❌ Is movie ka file abhi add nahi hai."
+        caption += "\n\n❌ File for this movie is not added yet."
 
     markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(title+' trailer')}"))
 
@@ -113,7 +110,7 @@ def dl(call):
     try:
         mid = int(call.data.split('_')[1])
         bot.copy_message(call.message.chat.id, DATABASE_CHANNEL, mid)
-        bot.answer_callback_query(call.id, "Bhej diya ✅")
+        bot.answer_callback_query(call.id, "File sent ✅")
     except Exception as e:
         bot.answer_callback_query(call.id, f"Error: {e}")
 
