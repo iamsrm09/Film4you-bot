@@ -18,6 +18,7 @@ def home():
 
 # --- ENV Variables from Render ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_CHANNEL = -1006053499724
 TMDB_KEY = os.getenv("TMDB_KEY") or os.getenv("TMDB_TOKEN")
 
 if not BOT_TOKEN or not TMDB_KEY:
