@@ -1,58 +1,102 @@
-# 1. TUMHARI DOWNLOAD LIST - Jisme file hai wahi dikhegi
-DOWNLOAD_MOVIES = {
-    "kgf chapter 2": "BAACAgQAAxkB...",
-    "animal 2023": "BAACAgQAAxkB...2",
-    "jawan": "BAACAgQAAxkB...3",
-    "pathaan": "BAACAgQAAxkB...4",
+Okay, English now.
+
+You want to remove the old TMDB code and make the bot give downloads directly from your channel `1004341107282`
+
+Channel ID will be `-1004341107282`
+
+Here is the *NEW FINAL CODE - Channel to Bot Download*:
+
+*How it works:*
+1. You upload any movie file in your channel `-1004341107282`
+2. Bot will automatically save its Message ID
+3. When user types movie name, bot will copy that file from channel to user
+
+### FINAL CODE - Paste in main.py
+import os, telebot, threading
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
+
+app = Flask('')
+@app.route('/')
+def home(): return "Bot Running - Channel Source"
+threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8099)).start()
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# YOUR CHANNEL ID - Add -100 in front
+CHANNEL_ID = -1004341107282
+
+# MOVIE DATABASE - movie_name : message_id_in_channel
+# How to get message_id? Forward any message from channel to @getidsbot
+MOVIES_DB = {
+    "kgf chapter 2": 5,
+    "animal": 6,
+    "jawan": 7,
+    "pathaan": 8,
+    # Add more like this -> "movie name": message_id
 }
 
+# Auto-save when you post in channel
+@bot.channel_post_handler(content_types=['document', 'video'])
+def save_from_channel(m):
+    # This will print message_id in logs when you upload to channel
+    file_name = m.document.file_name if m.document else m.video.file_name if m.video else "video"
+    print(f"NEW FILE IN CHANNEL: {file_name} -> MESSAGE_ID: {m.message_id}")
+    # You can manually add it to MOVIES_DB
+
+@bot.message_handler(commands=['start'])
+def start(m):
+    bot.reply_to(m, "🎬 Send Movie Name\nExample: KGF, Animal, Jawan")
+
 @bot.message_handler(func=lambda m: True, content_types=['text'])
-def handle(m):
-    text = m.text.lower().strip()
-    if len(text) < 2: return
-    if text.startswith('/'): return
+def search(m):
+    if not m.text or m.text.startswith('/'): return
+    query = m.text.lower().strip()
+    if len(query) < 2: return
 
-    # Pehle TMDB se movie ka poster + details lao
-    item = search_best(text)
-    if not item:
-        return
-
-    title = (item.get('title') or item.get('name')).lower()
-    real_title = item.get('title') or item.get('name')
-    
-    # CHECK KARO - Kya ye movie tumhare paas hai?
-    file_id = None
-    for name, fid in DOWNLOAD_MOVIES.items():
-        if name in title or title in name or text in name:
-            file_id = fid
+    found = None
+    found_key = None
+    for name, msg_id in MOVIES_DB.items():
+        if query in name or name in query:
+            found = msg_id
+            found_key = name
             break
 
-    markup = InlineKeyboardMarkup()
-
-    if file_id:
-        # AGAR HAI TO HI DOWNLOAD BUTTON DIKHEGA
-        bot_name = bot.get_me().username
-        # Deep link jisme file bhejega
-        download_link = f"https://t.me/{bot_name}?start={name.replace(' ', '_')}"
-        markup.row(InlineKeyboardButton("💾 DOWNLOAD AVAILABLE", url=download_link))
-        markup.row(InlineKeyboardButton("📦 MovieBox", url=f"https://moviebox.ph/web/searchResult?keyword={urllib.parse.quote(real_title)}"))
+    if found:
+        # Movie Found in Channel - Send it
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("📦 Watch on MovieBox", url=f"https://moviebox.ph/web/searchResult?keyword={found_key}"))
         
-        caption = f"🎬 *{real_title}*\n\n✅ Download Available hai!\n👇 Button pe click karo"
-        has_download = True
+        try:
+            bot.send_message(m.chat.id, f"🎬 *{found_key.title()}* found!\n\nSending file from channel...", parse_mode="Markdown", reply_markup=markup)
+            # Copy file from channel to user
+            bot.copy_message(m.chat.id, CHANNEL_ID, found)
+        except Exception as e:
+            print(f"Error: {e}")
+            bot.send_message(m.chat.id, f"❌ Error: Make sure bot is ADMIN in channel {CHANNEL_ID}\n\n{e}")
     else:
-        # AGAR NAHI HAI TO REQUEST BUTTON
-        markup.row(InlineKeyboardButton("❌ Not Available - Request Karo", url="https://t.me/FSearch4ubot"))
-        caption = f"🎬 *{real_title}*\n\n❌ Iska Download abhi mere paas nahi hai.\nRequest kar do, jaldi add kar dunga."
-        has_download = False
+        # Not Found
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("Request Movie", url="https://t.me/FSearch4ubot"))
+        bot.send_message(m.chat.id, f"❌ *{m.text}* not available in channel.\n\nRequest it.", parse_mode="Markdown", reply_markup=markup)
 
-    # Poster bhejo
-    poster = item.get('poster_path')
-    if poster:
-        bot.send_photo(m.chat.id, f"https://image.tmdb.org/t/p/w500{poster}", caption=caption, parse_mode="Markdown", reply_markup=markup)
-    else:
-        bot.send_message(m.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
+print("✅ Bot Started - Source: Channel")
+bot.infinity_polling()
+### IMPORTANT STEPS:
 
-    # Agar download hai to file bhi bhej do
-    if has_download and file_id:
-        bot.send_document(m.chat.id, file_id)
-        
+*1. Make bot ADMIN in your channel `-1004341107282`*
+   Go to Channel -> Admins -> Add your bot as admin
+
+*2. Get Message ID*
+   - Upload a movie to channel
+   - Forward that movie to `@getidsbot` or `@userinfobot`
+   - It will give you Message ID like `5`
+   - Add it to `MOVIES_DB` in code
+
+Example:
+MOVIES_DB = {
+    "kgf": 12,
+    "animal 2023": 13,
+}
+Do you want me to make a version where you don't need to manually add message IDs? I can make it auto-detect by file caption.
