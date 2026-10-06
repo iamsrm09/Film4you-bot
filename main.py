@@ -93,6 +93,15 @@ def trending_cmd(message):
         data = requests.get(url, timeout=15).json()
         movies = data.get("results", [])[:10]
         text = "🔥 *Trending Movies Today:*\n\n"
+        @bot.message_handler(commands=['db'])
+def check_db(message):
+    if not movie_database:
+        bot.send_message(message.chat.id, "❌ Database khali hai!\nChannel me movie dubara upload karo.")
+        return
+    text = f"✅ Total Saved: {len(movie_database)} files\n\n"
+    for name in list(movie_database.keys())[:20]:
+        text += f"- {name}\n"
+    bot.send_message(message.chat.id, text)
         for i, m in enumerate(movies, 1):
             text += f"{i}. {m.get('title')} - ⭐ {m.get('vote_average')}/10\n"
         bot.send_message(message.chat.id, text, parse_mode="Markdown")
