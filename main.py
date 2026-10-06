@@ -45,36 +45,40 @@ def find_file(query):
     q = query.lower().strip()
     if q in movie_db:
         return movie_db[q]
+    for name, mid in movie_db.items():
+        if q == name.lower():
+            return mid
+    return None
 
-    best_match = None
-    best_score = 0
+def find_all_parts(query):
+    q = query.lower().strip()
+    q_base = re.sub(r'\d+', '', q).strip()
+    if not q_base:
+        q_base = q
+
+    results = {}
 
     for name, mid in movie_db.items():
         name_low = name.lower()
-        if q == name_low:
-            return mid
+        if q_base in name_low:
+            nums = re.findall(r'\d+', name_low)
+            part_num = nums[0] if nums else ""
 
-        q_words = q.split()
-        score = 0
-        for word in q_words:
-            if word in name_low:
-                score += 1
+            if q!= q_base:
+                if q in name_low:
+                    return {part_num: mid}
+            else:
+                if part_num == "":
+                    part_num = "1" if "1" not in results else str(len(results)+1)
+                if part_num not in results:
+                    results[part_num] = mid
 
-        if score == len(q_words):
-            q_num = re.findall(r'\d+', q)
-            name_num = re.findall(r'\d+', name_low)
+    if not results:
+        single = find_file(query)
+        if single:
+            return {"": single}
 
-            if q_num and name_num:
-                if q_num[0] == name_num[0]:
-                    return mid
-                else:
-                    continue
-
-            if score > best_score:
-                best_score = score
-                best_match = mid
-
-    return best_match
+    return results
 
 @bot.message_handler(content_types=['document', 'video'])
 def handle_file(message):
@@ -181,30 +185,63 @@ def search_handle(message):
     query = message.text.strip()
     bot.send_chat_action(message.chat.id, 'typing')
 
-    file_id = find_file(query)
+    all_parts = find_all_parts(query)
     tmdb = search_tmdb(query)
 
-    if not tmdb:
-        if file_id:
-            bot.copy_message(message.chat.id, DATABASE_CHANNEL, file_id)
-            return
+    if not tmdb and not all_parts:
         bot.send_message(message.chat.id, f"'{query}' not found in database.")
         return
 
-    title = tmdb.get('title')
-    overview = tmdb.get('overview','')[:400]
-    caption = f"🎬 {title}\n⭐ {tmdb.get('vote_average')}/10\n📅 {tmdb.get('release_date')}\n\n{overview}"
+    if tmdb:
+        title = tmdb.get('title', query)
+        overview = tmdb.get('overview','')[:400]
+        caption = f"🎬 {title}\n⭐ {tmdb.get('vote_average')}/10\n📅 {tmdb.get('release_date')}\n\n{overview}"
+    else:
+        caption = f"🎬 {query}\n"
 
     markup = InlineKeyboardMarkup()
-    if file_id:
+
+    if all_parts:
         caption += "\n\n✅ Download Available!"
-        markup.row(InlineKeyboardButton("📥 DOWNLOAD NOW", callback_data=f"dl_{file_id}"))
+        row = []
+        for part_num in sorted(all_parts.keys(), key=lambda x: int(x) if x.isdigit() else 0):
+            mid = all_parts[part_num]
+            if len(all_parts) == 1:
+                if part_num == "":
+                    btn_text = "📥 DOWNLOAD NOW"
+                else:
+                    btn_text = f"📥 {part_num}"
+                    if not part_num.isdigit():
+                        btn_text = "📥 DOWNLOAD NOW"
+                    else:
+                        btn_text = f"📥 {part_num}"
+                        # Special case for 1,2,3
+                        btn_text = f"{part_num}"
+                        if part_num.isdigit():
+                            btn_text = f"{part_num}"
+                        # Final format as you asked
+                        btn_text = f"{part_num}"
+            else:
+                btn_text = f"{part_num}"
+
+            # As you asked, button pe sirf 1 2 3 likhna hai
+            display_text = part_num if part_num else "DOWNLOAD"
+            if len(all_parts) == 1 and not part_num.isdigit():
+                display_text = "DOWNLOAD"
+
+            row.append(InlineKeyboardButton(display_text, callback_data=f"dl_{mid}"))
+            if len(row) == 3:
+                markup.row(*row)
+                row = []
+        if row:
+            markup.row(*row)
     else:
         caption += "\n\n❌ File for this movie is not added yet."
 
-    markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(title+' trailer')}"))
+    if tmdb:
+        markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(title+' trailer')}"))
 
-    poster = tmdb.get('poster_path')
+    poster = tmdb.get('poster_path') if tmdb else None
     if poster:
         bot.send_photo(message.chat.id, f"https://image.tmdb.org/t/p/w500{poster}", caption=caption, reply_markup=markup)
     else:
