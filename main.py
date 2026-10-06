@@ -5,111 +5,121 @@ from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# Keep bot alive for Render
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Movie Bot is Running!"
+    return "Movie Bot Running"
 
-# YOUR BOT TOKEN FROM ENV
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ================= MOVIE DATABASE =================
-# To get file_id: Send any movie to this bot, it will reply with file_id
-# Then copy that file_id here
+# ================= OLD MOVIE DATABASE - SAME FORMAT =================
 MOVIES = {
-    "animal_2023": {
-        "file_id": "BAACAgQAAxkBA...",
+    "animal": {
+        "file_id": "BAACAgQAAxkBAA...", # Replace with your real file_id
         "name": "Animal 2023",
-        "caption": "🎬 Animal (2023) Hindi 1080p\n\nQuality: 1080p\nSize: 2.1GB\n\n⏰ Note: This file will auto-delete in 10 minutes. Save it!"
+        "caption": (
+            "🎬 **Movie: Animal (2023)**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "📀 Quality: 1080p HDRip\n"
+            "🔊 Language: Hindi Dubbed\n"
+            "⭐ IMDb Rating: 7.2/10\n"
+            "📁 Size: 2.1GB\n"
+            "🎭 Genre: Action, Crime\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "⏰ Note: File will auto-delete in 10 minutes\n"
+            "💾 Please save/forward it"
+        )
     },
-    "jawan_2023": {
-        "file_id": "BAACAgQAAxkBB...",
+    "jawan": {
+        "file_id": "BAACAgQAAxkBAA...2",
         "name": "Jawan 2023",
-        "caption": "🎬 Jawan (2023) Hindi 1080p\n\n⏰ Note: Auto-delete in 10 minutes"
+        "caption": (
+            "🎬 **Movie: Jawan (2023)**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "📀 Quality: 1080p HDRip\n"
+            "🔊 Language: Hindi\n"
+            "⭐ IMDb Rating: 7.5/10\n"
+            "📁 Size: 1.9GB\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "⏰ Note: Auto-delete in 10 minutes"
+        )
     }
 }
-# ===================================================
+# ===================================================================
 
-def auto_delete_message(chat_id, message_id, delay=600):
-    """Delete message after delay (600 sec = 10 min)"""
-    time.sleep(delay)
+def delete_after_10_min(chat_id, message_id):
+    time.sleep(600) # 600 seconds = 10 minutes
     try:
         bot.delete_message(chat_id, message_id)
-        bot.send_message(chat_id, "⏰ File deleted after 10 mins.\nTo get again, click the poster button or search again.")
+        bot.send_message(chat_id, "⏰ File auto-deleted after 10 minutes. Search again or click poster link to get it back.")
     except Exception as e:
-        print(f"Delete error: {e}")
+        print(e)
 
-# 1. /start COMMAND + DEEP LINK
 @bot.message_handler(commands=['start'])
-def start_command(message):
-    args = message.text.split()
+def handle_start(message):
+    parts = message.text.split()
 
-    # If user came from poster link: /start animal_2023
-    if len(args) > 1:
-        movie_code = args[1].lower()
-        if movie_code in MOVIES:
-            movie = MOVIES[movie_code]
-            sent = bot.send_document(
+    # NEW FEATURE: Deep link from poster - /start animal
+    if len(parts) > 1:
+        code = parts[1].lower()
+        if code in MOVIES:
+            movie = MOVIES[code]
+            sent_msg = bot.send_document(
                 message.chat.id,
                 movie["file_id"],
-                caption=movie["caption"]
+                caption=movie["caption"],
+                parse_mode="Markdown"
             )
-            # Start auto-delete timer
-            threading.Thread(target=auto_delete_message, args=(message.chat.id, sent.message_id, 600), daemon=True).start()
+            threading.Thread(target=delete_after_10_min, args=(message.chat.id, sent_msg.message_id), daemon=True).start()
+            return
         else:
-            bot.send_message(message.chat.id, "❌ Movie not found in database.")
-        return
+            bot.send_message(message.chat.id, "Movie not found.")
+            return
 
-    # Normal /start
-    bot.send_message(message.chat.id,
-        "👋 Welcome to Movie Bot!\n\n"
-        "Just send movie name like:\n"
-        "`animal` or `jawan`\n\n"
-        "I will send you the movie.",
-        parse_mode="Markdown"
-    )
+    bot.send_message(message.chat.id, "👋 Welcome!\n\nSend movie name like `animal` or `jawan`", parse_mode="Markdown")
 
-# 2. SEARCH MOVIE BY NAME
 @bot.message_handler(content_types=['text'])
-def search_handler(message):
+def handle_search(message):
     if message.text.startswith('/'):
         return
 
     query = message.text.lower().strip()
-    found = False
 
     for code, movie in MOVIES.items():
-        if query in code.lower() or query in movie["name"].lower():
-            found = True
-            # Create deep link for sharing
+        if query in movie["name"].lower() or query == code:
+
+            # Deep link for poster button
             bot_username = bot.get_me().username
             deep_link = f"https://t.me/{bot_username}?start={code}"
 
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📥 Get Download Link", url=deep_link))
+            markup.add(InlineKeyboardButton("📥 Direct Download Link", url=deep_link))
 
-            bot.send_message(message.chat.id, f"✅ Found: {movie['name']}\nShareable Link: {deep_link}", reply_markup=markup)
+            # OLD FORMAT: Send with full caption + details
+            sent_msg = bot.send_document(
+                message.chat.id,
+                movie["file_id"],
+                caption=movie["caption"],
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
 
-            sent = bot.send_document(message.chat.id, movie["file_id"], caption=movie["caption"])
-            threading.Thread(target=auto_delete_message, args=(message.chat.id, sent.message_id, 600), daemon=True).start()
-            break
+            # Auto delete after 10 min
+            threading.Thread(target=delete_after_10_min, args=(message.chat.id, sent_msg.message_id), daemon=True).start()
+            return
 
-    if not found:
-        bot.send_message(message.chat.id, "❌ Not found. Try another name.")
+    bot.send_message(message.chat.id, "❌ Movie not found. Try: animal, jawan")
 
-# 3. GET FILE_ID WHEN YOU SEND MOVIE
+# Helper to get file_id
 @bot.message_handler(content_types=['video', 'document'])
-def get_file_id_handler(message):
-    file_id = message.video.file_id if message.video else message.document.file_id
-    bot.reply_to(message, f"Your File ID is:\n`{file_id}`\n\nCopy this and paste in MOVIES dict.", parse_mode="Markdown")
+def handle_file(message):
+    fid = message.video.file_id if message.video else message.document.file_id
+    bot.reply_to(message, f"File ID:\n`{fid}`", parse_mode="Markdown")
 
-# RUN
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    print("Bot Started...")
-    bot.infinity_polling(none_stop=True, skip_pending=True)
+    bot.infinity_polling(none_stop=True)
