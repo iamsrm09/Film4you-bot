@@ -45,43 +45,52 @@ def init_db():
 def clean_text(text: str) -> str:
     if not text:
         return ""
-    text = text.lower()
+    text = str(text).lower()
     text = re.sub(r'[\._\-\[\}\]\(\)]', ' ', text)
     return ' '.join(text.split())
 
 def save_movie_to_db(file_name: str, message_id: int, caption: str):
-    conn = sqlite3.connect("movies.db")
-    cursor = conn.cursor()
-    c_name = clean_text(file_name)
-    cursor.execute("""
-        INSERT OR REPLACE INTO movies (file_name, clean_name, message_id, caption)
-        VALUES (?, ?, ?, ?)
-    """, (file_name, c_name, message_id, caption))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("movies.db")
+        cursor = conn.cursor()
+        c_name = clean_text(file_name)
+        safe_caption = str(caption) if caption else str(file_name)
+        cursor.execute("""
+            INSERT OR REPLACE INTO movies (file_name, clean_name, message_id, caption)
+            VALUES (?, ?, ?, ?)
+        """, (str(file_name), c_name, message_id, safe_caption))
+        conn.commit()
+        conn.close()
+        logger.info(f"Successfully saved to DB: {file_name}")
+    except Exception as e:
+        logger.error(f"Save DB Error: {e}")
 
 def search_movies_db(query: str):
-    conn = sqlite3.connect("movies.db")
-    cursor = conn.cursor()
-    clean_q = clean_text(query)
-    
-    keywords = clean_q.split()
-    if not keywords:
-        conn.close()
-        return []
+    try:
+        conn = sqlite3.connect("movies.db")
+        cursor = conn.cursor()
+        clean_q = clean_text(query)
+        
+        keywords = clean_q.split()
+        if not keywords:
+            conn.close()
+            return []
 
-    sql_conditions = " AND ".join(["clean_name LIKE ?" for _ in keywords])
-    params = [f"%{kw}%" for kw in keywords]
-    
-    cursor.execute(f"""
-        SELECT file_name, message_id, caption FROM movies
-        WHERE {sql_conditions} OR clean_name LIKE ?
-        LIMIT 10
-    """, (*params, f"%{clean_q}%"))
-    
-    results = cursor.fetchall()
-    conn.close()
-    return results
+        sql_conditions = " AND ".join(["clean_name LIKE ?" for _ in keywords])
+        params = [f"%{kw}%" for kw in keywords]
+        
+        cursor.execute(f"""
+            SELECT file_name, message_id, caption FROM movies
+            WHERE {sql_conditions} OR clean_name LIKE ?
+            LIMIT 10
+        """, (*params, f"%{clean_q}%"))
+        
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    except Exception as e:
+        logger.error(f"Search DB Error: {e}")
+        return []
 
 # ==============================================================================
 # TMDB API HELPER
@@ -99,10 +108,10 @@ def fetch_tmdb_info(query: str):
                 movie = results[0]
                 poster_path = movie.get("poster_path")
                 return {
-                    "title": movie.get("title"),
+                    "title": movie.get("title", query),
                     "release_date": movie.get("release_date", "N/A"),
                     "rating": movie.get("vote_average", "N/A"),
-                    "overview": movie.get("overview", "No plot available."),
+                    "overview": movie.get("overview", "No overview available."),
                     "poster": f"https://image.tmdb.org/t5/p/w500{poster_path}" if poster_path else None
                 }
     except Exception as e:
@@ -117,7 +126,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"👋 Hello {user_name}!\n\n"
         "🎬 Welcome to Film4You Movie Search Bot!\n\n"
-        "• Kisi bhi movie ka naam likh kar bhejiye ya /search <movie_name> use karein."
+        "• Movie ka naam likh kar bhejiye ya /search <movie_name> use karein."
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add Bot to Group", url=f"https://t.me/{context.bot.username}?startgroup=true")]
@@ -140,7 +149,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if file_name:
         caption = message.caption or file_name
         save_movie_to_db(file_name, message.message_id, caption)
-        logger.info(f"Database Updated: {file_name}")
 
 async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     try:
@@ -148,7 +156,7 @@ async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE, que
         tmdb_info = fetch_tmdb_info(query)
 
         if not matched_files and not tmdb_info:
-            await update.message.reply_text("❌ Movie nahi mili. Kripya spelling check karke dubara try karein.")
+            await update.message.reply_text("❌ Movie nahi mili. Kripya spelling check karein.")
             return
 
         text = ""
@@ -157,16 +165,16 @@ async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE, que
             text += (
                 f"🎬 {tmdb_info['title']} ({release_yr})\n"
                 f"⭐ Rating: {tmdb_info['rating']}/10\n\n"
-                f"📝 Story:\n{tmdb_info['overview'][:250]}...\n\n"
+                f"📝 Story:\n{tmdb_info['overview'][:180]}...\n\n"
             )
         else:
             text += f"🔎 Search Results for: {query}\n\n"
 
         buttons = []
         if matched_files:
-            text += "✅ Status: Available in Database\n\n👇 Click Below To Get File:"
+            text += "✅ Status: Available in Database\n\n👇 Click Below To Download:"
             for idx, (f_name, msg_id, _) in enumerate(matched_files, 1):
-                btn_label = f"📁 Download File #{idx}"
+                btn_label = f"📁 Download Movie #{idx}"
                 buttons.append([InlineKeyboardButton(btn_label, callback_data=f"get_{msg_id}")])
         else:
             text += "❌ Status: Not Available in Database\n💡 Request to: @Iamsrm0"
@@ -180,13 +188,16 @@ async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE, que
         keyboard = InlineKeyboardMarkup(buttons)
 
         if tmdb_info and tmdb_info.get("poster"):
-            await update.message.reply_photo(photo=tmdb_info["poster"], caption=text, reply_markup=keyboard)
+            try:
+                await update.message.reply_photo(photo=tmdb_info["poster"], caption=text[:1000], reply_markup=keyboard)
+            except Exception:
+                await update.message.reply_text(text, reply_markup=keyboard)
         else:
             await update.message.reply_text(text, reply_markup=keyboard)
 
     except Exception as e:
-        logger.error(f"Search Handler Error: {e}")
-        await update.message.reply_text("⚠️ Response banane me error aaya. Kripya dubara try karein.")
+        logger.error(f"Search Process Crash: {e}")
+        await update.message.reply_text("⚠️ Match mila par send karne me error aaya. Try again.")
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -203,7 +214,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def file_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer("⚡ Forwarding movie file...")
+    await query.answer("⚡ Sending movie file...")
     msg_id = int(query.data.split("_")[1])
 
     try:
@@ -214,7 +225,7 @@ async def file_download_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
     except Exception as e:
         logger.error(f"Copy Message Error: {e}")
-        await query.message.reply_text("❌ File bhejane me error aaya. Check karein ki bot DB channel me admin hai.")
+        await query.message.reply_text("❌ Bot Database Channel me Admin nahi hai ya message delete ho gaya hai.")
 
 # ==============================================================================
 # MAIN EXECUTION
