@@ -5,7 +5,7 @@ import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 # ----------------------------------------------------
-# 1. FLASK SERVER SETUP (Replit me Bot KO Active Rakhne Ke Liye)
+# 1. FLASK SERVER SETUP (Render Port Binding Fixed)
 # ----------------------------------------------------
 app = Flask('')
 
@@ -14,7 +14,9 @@ def home():
     return "Film4you Bot is Alive and Running!"
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+    # Render ke dynamic PORT requirement ko handle karne ke liye
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run_flask)
@@ -24,12 +26,13 @@ def keep_alive():
 # ----------------------------------------------------
 # 2. TELEGRAM BOT SETUP
 # ----------------------------------------------------
-BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN_HERE')
+# Environment variable 'BOT_TOKEN' se automatic token uthayega
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
 
 # ----------------------------------------------------
-# 3. /start AUR /movie COMMAND HANDLER
+# 3. /start AUR MOVIE COMMAND HANDLER
 # ----------------------------------------------------
 @bot.message_handler(commands=['start', 'movie', 'search'])
 def send_movie_response(message):
@@ -49,15 +52,47 @@ def send_movie_response(message):
 
     photo_url = "https://m.media-amazon.com/images/M/MVBBMjA4OGM2NTEtZTRmOC00M2I2LWI3M2UtMTM2NTlhNDlhNTYxXkEyXkFqcGdeQXVyMTEzMTI1Mjk3._V1_.jpg"
 
-    # Inline Keyboard Layout Setup
+    # Inline Keyboard Setup
     keyboard = InlineKeyboardMarkup(row_width=2)
 
-    # Row 1 Buttons
+    # Row 1
     btn_trailer = InlineKeyboardButton("▶️ Watch Trailer", url="https://www.youtube.com/")
     btn_where = InlineKeyboardButton("📍 Where to Watch", url="https://www.justwatch.com/")
 
-    # Row 2 Buttons
+    # Row 2
     btn_imdb = InlineKeyboardButton("⭐ IMDb Rating", url="https://www.imdb.com/")
     btn_details = InlineKeyboardButton("🎬 Full Details", url="https://www.google.com/")
 
-    # Row 3 Buttons
+    # Row 3 (Dono Download Links)
+    btn_download1 = InlineKeyboardButton("📥 Filmyzilla Link", url="https://www.filmyzilla72.com/")
+    btn_download2 = InlineKeyboardButton("📥 Cinevood Link", url="https://cinevood.com/")
+
+    # Adding Buttons
+    keyboard.add(btn_trailer, btn_where)
+    keyboard.add(btn_imdb, btn_details)
+    keyboard.add(btn_download1, btn_download2)
+
+    # Send Photo Message
+    bot.send_photo(
+        chat_id=message.chat.id,
+        photo=photo_url,
+        caption=caption_text,
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+
+# Messages Handler
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
+    send_movie_response(message)
+
+
+# ----------------------------------------------------
+# 4. MAIN EXECUTION
+# ----------------------------------------------------
+if __name__ == "__main__":
+    print("Starting Web Server...")
+    keep_alive()
+    
+    print("Starting Telegram Bot...")
+    bot.infinity_polling()
