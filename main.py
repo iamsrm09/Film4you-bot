@@ -52,7 +52,9 @@ def all_movies(message):
         InlineKeyboardButton("🎬 Google", url=f"https://www.google.com/search?q={query}+movie")
     )
     markup.add(
-        InlineKeyboardButton("📥 Filmyzilla", url=f"https://www.filmyzilla72.com/movie/movie_id/movie_slug}"),
+        InlineKeyboardButton("📥 Filmyzilla", url=f"https://www.filmyzilla72.com/('/movie/<int:movie_id>/<string:movie_slug>')
+def get_movie(movie_id, movie_slug):
+    return f"Movie ID: {movie_id}, Slug: {movie_slug}"}"),
         InlineKeyboardButton("📥 Cinevood", url=f"https://cinevood.com/in/search?q={query}")
     )
 
