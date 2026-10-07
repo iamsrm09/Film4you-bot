@@ -1,752 +1,210 @@
-import os
-import re
-import sqlite3
 import logging
-from pathlib import Path
-
-import httpx
-from dotenv import load_dotenv
-
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.constants import ChatType
+import sqlite3
+import requests
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
     filters,
 )
 
-# ============================================================
-# CONFIG
-# ============================================================
+# ==============================================================================
+# CONFIGURATION & KEYS (Aapki Details Yahan Set Karein)
+# ==============================================================================
+BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"      # BotFather se milne wala Bot Token
+TMDB_KEY = "YOUR_TMDB_API_KEY_HERE"            # TMDB API Key
+DB_CHANNEL_ID = -1001234567890                  # Apne Database Channel ka Numeric ID (-100 se shuru hota hai)
+ADMIN_ID = 123456789                             # Aapka Telegram Numeric ID (Optional)
 
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-TMDB_TOKEN = os.getenv("TMDB_TOKEN")
-
-ARCHIVE_CHANNEL_ID = int(
-    os.getenv("ARCHIVE_CHANNEL_ID", "-1001004341107282")
-)
-
-ADMIN_IDS = {
-    int(x.strip())
-    for x in os.getenv("ADMIN_IDS", "").split(",")
-    if x.strip()
-}
-
-DATABASE = os.getenv("DATABASE", "movies.db")
-
-TMDB_BASE = "https://api.themoviedb.org/3"
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN missing in .env")
-
-if not TMDB_TOKEN:
-    raise RuntimeError("TMDB_TOKEN missing in .env")
-
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-Path("logs").mkdir(exist_ok=True)
-
+# Logging Setup
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    handlers=[
-        logging.FileHandler("logs/bot.log", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-logger = logging.getLogger("Film4you")
-
-
-# ============================================================
-# DATABASE
-# ============================================================
-
-def db():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
+# ==============================================================================
+# DATABASE MANAGEMENT (SQLite)
+# ==============================================================================
 def init_db():
-    conn = db()
-
-    conn.execute("""
+    """Database tables create karne ke liye."""
+    conn = sqlite3.connect("movies.db")
+    cursor = conn.cursor()
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS movies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tmdb_id INTEGER,
-            title TEXT NOT NULL,
-            original_title TEXT,
-            year TEXT,
-            message_id INTEGER NOT NULL,
-            channel_id INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-            UNIQUE(channel_id, message_id)
+            file_name TEXT UNIQUE,
+            message_id INTEGER,
+            caption TEXT
         )
     """)
-
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_movies_title
-        ON movies(title)
-    """)
-
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_movies_tmdb
-        ON movies(tmdb_id)
-    """)
-
     conn.commit()
     conn.close()
 
-
-def save_movie(
-    title,
-    message_id,
-    channel_id,
-    tmdb_id=None,
-    original_title=None,
-    year=None,
-):
-    conn = db()
-
-    try:
-        conn.execute("""
-            INSERT OR IGNORE INTO movies
-            (
-                tmdb_id,
-                title,
-                original_title,
-                year,
-                message_id,
-                channel_id
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            tmdb_id,
-            title,
-            original_title,
-            year,
-            message_id,
-            channel_id,
-        ))
-
-        conn.commit()
-
-    except Exception:
-        logger.exception("Failed to save movie")
-
-    finally:
-        conn.close()
-
-
-def find_movie(query):
-    conn = db()
-
-    row = conn.execute("""
-        SELECT *
-        FROM movies
-        WHERE title LIKE ?
-           OR original_title LIKE ?
-        ORDER BY id DESC
-        LIMIT 1
-    """, (
-        f"%{query}%",
-        f"%{query}%",
-    )).fetchone()
-
-    conn.close()
-    return row
-
-
-def movie_count():
-    conn = db()
-
-    count = conn.execute(
-        "SELECT COUNT(*) FROM movies"
-    ).fetchone()[0]
-
+def save_movie_to_db(file_name: str, message_id: int, caption: str):
+    """Channel ki files ko local database me save/update karne ke liye."""
+    conn = sqlite3.connect("movies.db")
+    cursor = conn.cursor()
+    clean_name = file_name.strip().lower()
+    cursor.execute("""
+        INSERT OR REPLACE INTO movies (file_name, message_id, caption)
+        VALUES (?, ?, ?)
+    """, (clean_name, message_id, caption))
+    conn.commit()
     conn.close()
 
-    return count
+def search_movies_db(query: str):
+    """Database me movie search karne ke liye."""
+    conn = sqlite3.connect("movies.db")
+    cursor = conn.cursor()
+    search_query = f"%{query.strip().lower()}%"
+    cursor.execute("""
+        SELECT file_name, message_id, caption FROM movies
+        WHERE file_name LIKE ? OR caption LIKE ?
+        LIMIT 10
+    """, (search_query, search_query))
+    results = cursor.fetchall()
+    conn.close()
+    return results
 
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
-
-
-def extract_year(text):
-    if not text:
+# ==============================================================================
+# TMDB API HELPER
+# ==============================================================================
+def fetch_tmdb_info(query: str):
+    """TMDB API se movie details, rating aur poster fetch karta hai."""
+    if not TMDB_KEY or TMDB_KEY == "YOUR_TMDB_API_KEY_HERE":
         return None
-
-    match = re.search(r"\b(19|20)\d{2}\b", text)
-
-    if match:
-        return match.group(0)
-
-    return None
-
-
-def clean_title(text):
-    if not text:
-        return ""
-
-    text = re.sub(
-        r"https?://\S+",
-        "",
-        text
-    )
-
-    text = re.sub(
-        r"[@#]\S+",
-        "",
-        text
-    )
-
-    text = re.sub(
-        r"\b(1080p|720p|480p|2160p|4k|web[- ]?dl|webrip|bluray|"
-        r"x264|x265|h264|h265|hevc|hdr|dual audio|"
-        r"multi audio|hindi|english)\b",
-        "",
-        text,
-        flags=re.I,
-    )
-
-    text = re.sub(
-        r"[\[\]\(\)\{\}_|]+",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    return text.strip()
-
-
-# ============================================================
-# TMDB
-# ============================================================
-
-async def tmdb_search(query):
-    headers = {
-        "Authorization": f"Bearer {TMDB_TOKEN}",
-        "accept": "application/json",
-    }
-
-    params = {
-        "query": query,
-        "include_adult": "false",
-        "language": "en-US",
-        "page": 1,
-    }
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(
-            f"{TMDB_BASE}/search/movie",
-            headers=headers,
-            params=params,
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-    return data.get("results", [])
-
-
-# ============================================================
-# START / WELCOME
-# ============================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user = update.effective_user
-
-    name = user.first_name or "Friend"
-
-    text = f"""
-🎬 <b>Welcome {name}!</b>
-
-━━━━━━━━━━━━━━━━━━
-🍿 <b>Film4you Movie Bot</b>
-━━━━━━━━━━━━━━━━━━
-
-🔎 Send me a movie name and I'll search for it.
-
-You can get:
-
-🎬 Movie information
-⭐ Rating
-📅 Release year
-📝 Story
-🎞 Trailer
-📥 Available authorized content
-
-━━━━━━━━━━━━━━━━━━
-💡 <b>Example:</b>
-<code>Spider-Man</code>
-
-Enjoy! 🍿
-"""
-
-    await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-    )
-
-
-# ============================================================
-# ARCHIVE CHANNEL INDEXER
-# ============================================================
-
-async def archive_post(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    message = update.channel_post
-
-    if not message:
-        return
-
-    if message.chat.id != ARCHIVE_CHANNEL_ID:
-        return
-
-    raw_text = (
-        message.caption
-        or message.text
-        or ""
-    )
-
-    if not raw_text:
-        return
-
-    title = clean_title(raw_text)
-
-    if not title:
-        return
-
-    year = extract_year(raw_text)
-
+    url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_KEY}&query={query}"
     try:
-        results = await tmdb_search(title)
-
-        tmdb_id = None
-        original_title = None
-        final_title = title
-
+        res = requests.get(url, timeout=5).json()
+        results = res.get("results", [])
         if results:
             movie = results[0]
+            poster_path = movie.get("poster_path")
+            return {
+                "title": movie.get("title"),
+                "release_date": movie.get("release_date", "N/A"),
+                "rating": movie.get("vote_average", "N/A"),
+                "overview": movie.get("overview", "No plot available."),
+                "poster": f"https://image.tmdb.org/t5/p/w500{poster_path}" if poster_path else None
+            }
+    except Exception as e:
+        logger.error(f"TMDB Fetch Error: {e}")
+    return None
 
-            tmdb_id = movie.get("id")
-            original_title = movie.get("original_title")
+# ==============================================================================
+# BOT HANDLERS & COMMANDS
+# ==============================================================================
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.effective_user.first_name if update.effective_user else "User"
+    msg = (
+        f"👋 **Hello {user_name}!**\n\n"
+        "🎬 **Welcome to World Largest Movie Search Bot!**\n\n"
+        "• Group ya PM me `/search <movie_name>` type karke movie dhoondiye.\n"
+        "• Direct Channel Files auto-deliver hongi."
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add Bot to Group", url=f"https://t.me/{context.bot.username}?startgroup=true")]
+    ])
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
 
-            if movie.get("title"):
-                final_title = movie["title"]
-
-            if movie.get("release_date"):
-                year = movie["release_date"][:4]
-
-        save_movie(
-            title=final_title,
-            original_title=original_title,
-            year=year,
-            tmdb_id=tmdb_id,
-            message_id=message.message_id,
-            channel_id=message.chat.id,
-        )
-
-        logger.info(
-            "Indexed: %s | message=%s",
-            final_title,
-            message.message_id,
-        )
-
-    except Exception:
-        logger.exception(
-            "Archive indexing failed"
-        )
-
-
-# ============================================================
-# MOVIE SEARCH
-# ============================================================
-
-async def search_movie(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.message:
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Database Channel me nayi ya forwarded posts/files automatically database me add hongi."""
+    message = update.channel_post
+    if not message or message.chat_id != DB_CHANNEL_ID:
         return
 
-    query = update.message.text.strip()
+    file_name = None
+    if message.document:
+        file_name = message.document.file_name
+    elif message.video:
+        file_name = message.video.file_name
+    elif message.caption:
+        file_name = message.caption.split("\n")[0]
 
-    if len(query) < 2:
+    if file_name:
+        caption = message.caption or file_name
+        save_movie_to_db(file_name, message.message_id, caption)
+        logger.info(f"Database Updated: {file_name}")
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ **Usage:** `/search <movie_name>`\nExample: `/search Avatar`", parse_mode="Markdown")
         return
 
-    # Don't process commands
-    if query.startswith("/"):
+    query = " ".join(context.args)
+    msg = await update.message.reply_text("🔎 *Searching Movie in Database...*", parse_mode="Markdown")
+
+    # 1. Local Database Search
+    matched_files = search_movies_db(query)
+    # 2. TMDB Details
+    tmdb_info = fetch_tmdb_info(query)
+
+    if not matched_files and not tmdb_info:
+        await msg.edit_text("❌ **Movie nahi mili.** Kripya spelling check karke dubara search karein.")
         return
 
-    try:
-
-        results = await tmdb_search(query)
-
-        if not results:
-            await update.message.reply_text(
-                "❌ Movie nahi mili.\n\n"
-                "Dusra naam try karein."
-            )
-            return
-
-        movie = results[0]
-
-        title = movie.get(
-            "title",
-            query
+    text = ""
+    if tmdb_info:
+        release_yr = tmdb_info['release_date'][:4] if len(tmdb_info['release_date']) >= 4 else "N/A"
+        text += (
+            f"🎬 *{tmdb_info['title']}* ({release_yr})\n"
+            f"⭐ **Rating:** {tmdb_info['rating']}/10\n\n"
+            f"📝 {tmdb_info['overview'][:180]}...\n\n"
         )
+    else:
+        text += f"🔎 **Results for:** `{query}`\n\n"
 
-        overview = movie.get(
-            "overview",
-            "Story available nahi hai."
-        )
+    buttons = []
+    if matched_files:
+        text += "📂 **Available Downloads:**\n"
+        for idx, (f_name, msg_id, _) in enumerate(matched_files, 1):
+            btn_label = f"📁 Get Movie File #{idx}"
+            buttons.append([InlineKeyboardButton(btn_label, callback_data=f"get_{msg_id}")])
+    else:
+        text += "⚠️ *Movie details mil gayi hain par download file DB channel me nahi hai.*"
 
-        rating = movie.get(
-            "vote_average",
-            0
-        )
+    keyboard = InlineKeyboardMarkup(buttons) if buttons else None
 
-        release_date = movie.get(
-            "release_date",
-            ""
-        )
+    if tmdb_info and tmdb_info.get("poster"):
+        await update.message.reply_photo(photo=tmdb_info["poster"], caption=text, parse_mode="Markdown", reply_markup=keyboard)
+        await msg.delete()
+    else:
+        await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
-        year = (
-            release_date[:4]
-            if release_date
-            else "N/A"
-        )
-
-        archive = find_movie(title)
-
-        if archive:
-
-            callback = (
-                f"dl:{archive['id']}:{update.message.message_id}"
-            )
-
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        "📥 Download",
-                        callback_data=callback,
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⭐ IMDb/TMDB Rating",
-                        callback_data=f"info:{movie['tmdb_id'] if 'tmdb_id' in movie else movie['id']}",
-                    )
-                ],
-            ]
-
-            status = "✅ Available"
-
-        else:
-
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        "🔎 Search Google",
-                        url=(
-                            "https://www.google.com/search?q="
-                            + title.replace(" ", "+")
-                        ),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "📩 Request Movie",
-                        callback_data="request",
-                    )
-                ],
-            ]
-
-            status = "❌ Not Available in Database"
-
-        text = f"""
-🎬 <b>{title}</b> ({year})
-
-⭐ <b>Rating:</b> {float(rating):.1f}/10
-
-📝 <b>Story:</b>
-{overview[:900]}
-
-━━━━━━━━━━━━━━━━━━
-
-📌 <b>Status:</b> {status}
-
-👇 <b>Options:</b>
-"""
-
-        await update.message.reply_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            disable_web_page_preview=True,
-        )
-
-    except Exception:
-        logger.exception(
-            "Movie search failed"
-        )
-
-        await update.message.reply_text(
-            "⚠️ Search karte waqt error aa gaya.\n"
-            "Thodi der baad dobara try karein."
-        )
-
-
-# ============================================================
-# DOWNLOAD BUTTON
-# ============================================================
-
-async def download_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
+async def file_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
-    await query.answer()
+    await query.answer("⚡ Forwarding movie file...")
+    msg_id = int(query.data.split("_")[1])
 
     try:
-
-        parts = query.data.split(":")
-
-        if len(parts) != 3:
-            return
-
-        _, db_id, request_message_id = parts
-
-        conn = db()
-
-        movie = conn.execute("""
-            SELECT *
-            FROM movies
-            WHERE id = ?
-        """, (
-            int(db_id),
-        )).fetchone()
-
-        conn.close()
-
-        if not movie:
-            await query.message.reply_text(
-                "❌ Movie database me nahi mili."
-            )
-            return
-
-        # Copy the authorized archive message
-        # back into the same chat as a reply.
         await context.bot.copy_message(
-            chat_id=query.message.chat.id,
-            from_chat_id=movie["channel_id"],
-            message_id=movie["message_id"],
-            reply_to_message_id=int(
-                request_message_id
-            ),
+            chat_id=query.message.chat_id,
+            from_chat_id=DB_CHANNEL_ID,
+            message_id=msg_id
         )
+    except Exception as e:
+        logger.error(f"Copy Message Error: {e}")
+        await query.message.reply_text("❌ Error: Verification fail. Verify karein ki Bot Database Channel me Admin hai.")
 
-    except Exception:
-        logger.exception(
-            "Copy/download callback failed"
-        )
-
-        await query.message.reply_text(
-            "⚠️ Content send nahi ho saka.\n"
-            "Admin ko inform karein."
-        )
-
-
-# ============================================================
-# REQUEST BUTTON
-# ============================================================
-
-async def request_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    query = update.callback_query
-
-    await query.answer()
-
-    await query.message.reply_text(
-        "📩 <b>Movie Request</b>\n\n"
-        "Movie ka exact naam bhej dein.\n"
-        "Admin usse review karega.",
-        parse_mode="HTML",
-    )
-
-
-# ============================================================
-# ADMIN COMMANDS
-# ============================================================
-
-async def stats(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    count = movie_count()
-
-    await update.message.reply_text(
-        f"""
-👑 <b>Admin Panel</b>
-
-🎬 Indexed Movies: <b>{count}</b>
-
-🗄 Database: <code>{DATABASE}</code>
-
-🤖 Bot: <b>Online</b>
-""",
-        parse_mode="HTML",
-    )
-
-
-async def myid(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    await update.message.reply_text(
-        f"🆔 Your Telegram ID:\n<code>{update.effective_user.id}</code>",
-        parse_mode="HTML",
-    )
-
-
-# ============================================================
-# ERROR HANDLER
-# ============================================================
-
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    logger.error(
-        "Unhandled exception:",
-        exc_info=context.error,
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
+# ==============================================================================
+# MAIN APPLICATION RUNNER
+# ==============================================================================
 def main():
-
     init_db()
+    app = Application.builder().token(BOT_TOKEN).build()
 
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    # Register Handlers
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("find", search_command))
+    app.add_handler(CallbackQueryHandler(file_download_callback, pattern=r"^get_"))
+    app.add_handler(MessageHandler(filters.Chat(DB_CHANNEL_ID), channel_post_handler))
 
-    # Commands
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "stats",
-            stats
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "myid",
-            myid
-        )
-    )
-
-    # Archive channel posts
-    application.add_handler(
-        MessageHandler(
-            filters.UpdateType.CHANNEL_POST,
-            archive_post,
-        )
-    )
-
-    # Download button
-    application.add_handler(
-        CallbackQueryHandler(
-            download_callback,
-            pattern=r"^dl:",
-        )
-    )
-
-    # Request button
-    application.add_handler(
-        CallbackQueryHandler(
-            request_callback,
-            pattern=r"^request$",
-        )
-    )
-
-    # Group/private movie search
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            search_movie,
-        )
-    )
-
-    application.add_error_handler(
-        error_handler
-    )
-
-    logger.info(
-        "Film4you bot starting..."
-    )
-
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=False,
-    )
-
+    logger.info("Bot fully active and polling...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
