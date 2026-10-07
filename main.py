@@ -14,24 +14,28 @@ def home():
     return "Film4you Bot is Alive and Running!"
 
 def run_flask():
-    # Render ke dynamic PORT requirement ko handle karne ke liye
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run_flask)
+    t.daemon = True
     t.start()
-
 
 # ----------------------------------------------------
 # 2. TELEGRAM BOT SETUP
 # ----------------------------------------------------
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
+
+if not BOT_TOKEN:
+    print("ERROR: BOT_TOKEN not found in Environment Variables!")
+    # Don't crash immediately, keep Flask alive to see logs
+    raise SystemExit("BOT_TOKEN missing")
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
-
 # ----------------------------------------------------
-# 3. /start AUR MOVIE COMMAND HANDLER
+# 3. HANDLERS
 # ----------------------------------------------------
 @bot.message_handler(commands=['start', 'movie', 'search'])
 def send_movie_response(message):
@@ -48,31 +52,20 @@ def send_movie_response(message):
         "💡 *Request to:* @Iamsrm0\n\n"
         "👇 *Check Options Below*"
     )
-
-    # Imgur/Telegram safe working poster URL
     photo_url = "https://i.imgur.com/3j3U2i8.jpeg"
-
-    # Inline Keyboard Layout
     keyboard = InlineKeyboardMarkup(row_width=2)
-
-    # Row 1
+    
     btn_trailer = InlineKeyboardButton("▶️ Watch Trailer", url="https://www.youtube.com/")
     btn_where = InlineKeyboardButton("📍 Where to Watch", url="https://www.justwatch.com/")
-
-    # Row 2
     btn_imdb = InlineKeyboardButton("⭐ IMDb Rating", url="https://www.imdb.com/")
     btn_details = InlineKeyboardButton("🎬 Full Details", url="https://www.google.com/")
-
-    # Row 3 (Dono Download Options)
     btn_download1 = InlineKeyboardButton("📥 Filmyzilla Link", url="https://www.filmyzilla72.com/")
     btn_download2 = InlineKeyboardButton("📥 Cinevood Link", url="https://cinevood.com/")
-
-    # Adding Buttons
+    
     keyboard.add(btn_trailer, btn_where)
     keyboard.add(btn_imdb, btn_details)
     keyboard.add(btn_download1, btn_download2)
 
-    # Safe Message Delivery (Photo fail ho toh Text bhej dega)
     try:
         bot.send_photo(
             chat_id=message.chat.id,
@@ -90,12 +83,15 @@ def send_movie_response(message):
             reply_markup=keyboard
         )
 
-# Message Handler
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     send_movie_response(message)
 
-
 # ----------------------------------------------------
-# 4. MAIN EXECUTION
-#
+# 4. MAIN EXECUTION - THIS WAS MISSING
+# ----------------------------------------------------
+if __name__ == "__main__":
+    keep_alive()
+    print("Flask started, now starting bot polling...")
+    # infinity_polling will keep the process alive
+    bot.infinity_polling(skip_pending=True)
