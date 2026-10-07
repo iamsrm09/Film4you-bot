@@ -16,7 +16,7 @@ from pyrogram.types import (
 # CONFIGURATION & KEYS
 # ==============================================================================
 # Telegram API details (my.telegram.org se lein)
-API_ID = int(os.getenv("API_ID", "1234567"))           
+API_ID = int(os.getenv("API_ID", "6053499724"))           
 API_HASH = os.getenv("API_HASH", "YOUR_API_HASH")      
 
 # Bot Details
