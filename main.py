@@ -1,7 +1,7 @@
 import os
 import re
 from threading import Thread
-from flask import Flask, render_template_string, abort
+from flask import Flask, render_template_string
 import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 import time
@@ -11,15 +11,19 @@ import time
 # ---------------------------------------------------------
 app = Flask(__name__)
 
-# Sample Movie Database (Isme posters, details, aur download links hain)
+# Replit/Domain URL (Apna Replit URL yahan badal sakte hain)
+DOMAIN_URL = os.environ.get('DOMAIN_URL', 'https://telegram-movie-bot--imshahrun.replit.app')
+
+# Sample Movie Database
 MOVIES_DB = {
     101: {
-        "title": "Pushpa 2: The Rule",
-        "slug": "pushpa-2-the-rule",
-        "poster": "https://image.tmdb.org/t/p/w500/v91i10YV7JAtWwUTo6yJ14E0WqO.jpg",
-        "rating": "8.8/10",
-        "genre": "Action / Drama",
-        "year": "2024",
+        "title": "Drishyam 2",
+        "slug": "drishyam-2",
+        "poster": "https://image.tmdb.org/t/p/w500/v1L19cst2N8fR19aU44uG4oJ66S.jpg",
+        "rating": "8.5/10",
+        "genre": "Drama / Thriller",
+        "year": "2022",
+        "story:"
         "story": "Pushpa Raj continues to rule the red sandalwood smuggling market while facing aggressive opposition from his rivals and law enforcement.",
         "download_720p": "https://example.com/download/pushpa2-720p",
         "download_1080p": "https://example.com/download/pushpa2-1080p"
