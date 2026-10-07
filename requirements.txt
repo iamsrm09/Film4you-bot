@@ -1,1 +1,6 @@
-pip install pyrogram tgcrypto requests python-dotenv
+pyrogram
+tgcrypto
+requests
+python-dotenv
+flask
+pyTelegramBotAPI
