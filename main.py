@@ -1,97 +1,151 @@
 import os
+import requests
 from threading import Thread
 from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-# ----------------------------------------------------
-# 1. FLASK SERVER SETUP (Render dynamic PORT fixed)
-# ----------------------------------------------------
+# --- 1. FLASK FOR RENDER ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Film4you Bot is Alive and Running!"
+def home(): return "Film4you Bot is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
+    t = Thread(target=run_flask, daemon=True)
     t.start()
 
-# ----------------------------------------------------
-# 2. TELEGRAM BOT SETUP
-# ----------------------------------------------------
+# --- 2. CONFIG ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
+# TMDB key ka naam kuch bhi ho sakta hai, sab check kar lenge
+TMDB_KEY = os.environ.get('TMDB_API_KEY') or os.environ.get('MOVIE_API_KEY') or os.environ.get('TMDB_KEY') or os.environ.get('API_KEY')
 
 if not BOT_TOKEN:
-    print("ERROR: BOT_TOKEN not found in Environment Variables!")
-    # Don't crash immediately, keep Flask alive to see logs
-    raise SystemExit("BOT_TOKEN missing")
+    raise SystemExit("BOT_TOKEN missing in Render Environment")
+if not TMDB_KEY:
+    print("WARNING: TMDB_API_KEY missing, bot will use dummy data")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ----------------------------------------------------
-# 3. HANDLERS
-# ----------------------------------------------------
-@bot.message_handler(commands=['start', 'movie', 'search'])
-def send_movie_response(message):
-    caption_text = (
-        "🎬 *Vinland Saga (2019)*\n"
-        "⭐ *Rating:* 8.5/10\n\n"
-        "📝 *Story:*\n"
-        "For a thousand years, the Vikings have made quite a name and reputation "
-        "for themselves as the strongest families with a thirst for violence. "
-        "Thorfinn, the son of one of the Vikings' greatest warriors, spends his "
-        "boyhood in a battlefield enhancing his skills in his adventure to redeem "
-        "his most-desired revenge after his father was murdered....\n\n"
-        "❌ *Status:* Not Available in Database\n"
-        "💡 *Request to:* @Iamsrm0\n\n"
-        "👇 *Check Options Below*"
+# --- 3. TMDB SEARCH FUNCTION ---
+def get_movie_details(movie_name):
+    try:
+        # Search movie
+        url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_KEY}&query={movie_name}"
+        res = requests.get(url).json()
+        if not res.get('results'):
+            return None
+
+        movie = res['results'][0]
+        movie_id = movie['id']
+
+        # Get full details + videos for trailer
+        detail_url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_KEY}&append_to_response=videos,credits"
+        details = requests.get(detail_url).json()
+
+        title = details.get('title', movie_name)
+        year = (details.get('release_date') or 'N/A')[:4]
+        rating = round(details.get('vote_average', 0), 1)
+        overview = details.get('overview', 'Story not available.')[:700] + "..."
+        poster_path = details.get('poster_path')
+        poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else "https://i.imgur.com/3j3U2i8.jpeg"
+
+        # Trailer link
+        trailer_key = ""
+        for vid in details.get('videos', {}).get('results', []):
+            if vid['type'] == 'Trailer' and vid['site'] == 'YouTube':
+                trailer_key = vid['key']
+                break
+        trailer_url = f"https://www.youtube.com/watch?v={trailer_key}" if trailer_key else f"https://www.youtube.com/results?search_query={title}+trailer"
+
+        return {
+            "title": title, "year": year, "rating": rating,
+            "overview": overview, "poster": poster_url,
+            "trailer": trailer_url, "id": movie_id
+        }
+    except Exception as e:
+        print(f"TMDB Error: {e}")
+        return None
+
+# --- 4. WELCOME HANDLER FOR GROUPS ---
+@bot.message_handler(content_types=['new_chat_members'])
+def welcome_new(message):
+    for new_user in message.new_chat_members:
+        name = new_user.first_name
+        text = (
+            f"Hey {name}! 👋 Welcome to *{message.chat.title}* \n\n"
+            f"🎬 Yaha movie ka naam bhejo, mai puri details dunga!\n"
+            f"Example: `Avengers`, `Vinland Saga`\n\n"
+            f"Bot by @Iamsrm0"
+        )
+        bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+# --- 5. MAIN MOVIE HANDLER ---
+@bot.message_handler(commands=['start'])
+def start_cmd(message):
+    bot.send_message(
+        message.chat.id,
+        "🎬 *Welcome to Film4you Bot!* 🎬\n\n"
+        "Bas koi bhi movie ka naam bhejo aur mai apko:\n"
+        "⭐ Rating, Poster, Story\n"
+        "▶️ Trailer, 📍 Where to Watch\n"
+        "📥 Download Links dunga!\n\n"
+        "Try karo: `KGF`, `Pushpa`, `Inception`",
+        parse_mode="Markdown"
     )
-    photo_url = "https://i.imgur.com/3j3U2i8.jpeg"
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    
-    btn_trailer = InlineKeyboardButton("▶️ Watch Trailer", url="https://www.youtube.com/")
-    btn_where = InlineKeyboardButton("📍 Where to Watch", url="https://www.justwatch.com/")
-    btn_imdb = InlineKeyboardButton("⭐ IMDb Rating", url="https://www.imdb.com/")
-    btn_details = InlineKeyboardButton("🎬 Full Details", url="https://www.google.com/")
-    btn_download1 = InlineKeyboardButton("📥 Filmyzilla Link", url="https://www.filmyzilla72.com/")
-    btn_download2 = InlineKeyboardButton("📥 Cinevood Link", url="https://cinevood.com/")
-    
-    keyboard.add(btn_trailer, btn_where)
-    keyboard.add(btn_imdb, btn_details)
-    keyboard.add(btn_download1, btn_download2)
+
+@bot.message_handler(func=lambda m: True)
+def movie_handler(message):
+    if message.text.startswith('/'): # ignore other commands
+        if not message.text.startswith('/start'):
+            return
+
+    query = message.text.replace('/movie','').replace('/search','').replace('/start','').strip()
+    if not query:
+        query = "Vinland Saga" # default if only /start pressed
+
+    # Typing...
+    bot.send_chat_action(message.chat.id, 'typing')
+    data = get_movie_details(query)
+
+    if not data:
+        bot.send_message(message.chat.id, f"❌ *{query}* nahi mila. Dusra naam try karo.", parse_mode="Markdown")
+        return
+
+    caption = (
+        f"🎬 *{data['title']} ({data['year']})*\n"
+        f"⭐ *Rating:* {data['rating']}/10 | *Powered by TMDB*\n\n"
+        f"📝 *Story:*\n{data['overview']}\n\n"
+        f"✅ *Status:* Details Found!\n"
+        f"💡 *Request to:* @Iamsrm0"
+    )
+
+    # Buttons
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("▶️ Watch Trailer", url=data['trailer']),
+        InlineKeyboardButton("📍 Where to Watch", url=f"https://www.justwatch.com/in/search?q={data['title']}")
+    )
+    markup.add(
+        InlineKeyboardButton("⭐ IMDb", url=f"https://www.imdb.com/find?q={data['title']}"),
+        InlineKeyboardButton("🎬 Full Details", url=f"https://www.themoviedb.org/movie/{data['id']}")
+    )
+    # Download Options - Search link
+    markup.add(
+        InlineKeyboardButton("📥 Filmyzilla Link", url=f"https://www.filmyzilla72.com/?s={data['title'].replace(' ', '+')}"),
+        InlineKeyboardButton("📥 Cinevood Link", url=f"https://cinevood.com/?s={data['title'].replace(' ', '+')}")
+    )
 
     try:
-        bot.send_photo(
-            chat_id=message.chat.id,
-            photo=photo_url,
-            caption=caption_text,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        print(f"Photo send error: {e}")
-        bot.send_message(
-            chat_id=message.chat.id,
-            text=caption_text,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
+        bot.send_photo(message.chat.id, data['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
+    except:
+        bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
 
-@bot.message_handler(func=lambda message: True)
-def handle_all_messages(message):
-    send_movie_response(message)
-
-# ----------------------------------------------------
-# 4. MAIN EXECUTION - THIS WAS MISSING
-# ----------------------------------------------------
+# --- 6. RUN ---
 if __name__ == "__main__":
     keep_alive()
-    print("Flask started, now starting bot polling...")
-    # infinity_polling will keep the process alive
-    bot.infinity_polling(skip_pending=True)
+    print("Bot Starting...")
+    bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
