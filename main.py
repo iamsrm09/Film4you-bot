@@ -5,7 +5,7 @@ import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 # ----------------------------------------------------
-# 1. FLASK SERVER SETUP (Render Port Binding Fixed)
+# 1. FLASK SERVER SETUP (Render dynamic PORT fixed)
 # ----------------------------------------------------
 app = Flask('')
 
@@ -26,7 +26,6 @@ def keep_alive():
 # ----------------------------------------------------
 # 2. TELEGRAM BOT SETUP
 # ----------------------------------------------------
-# Environment variable 'BOT_TOKEN' se automatic token uthayega
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -50,9 +49,10 @@ def send_movie_response(message):
         "👇 *Check Options Below*"
     )
 
-    photo_url = "https://m.media-amazon.com/images/M/MVBBMjA4OGM2NTEtZTRmOC00M2I2LWI3M2UtMTM2NTlhNDlhNTYxXkEyXkFqcGdeQXVyMTEzMTI1Mjk3._V1_.jpg"
+    # Imgur/Telegram safe working poster URL
+    photo_url = "https://i.imgur.com/3j3U2i8.jpeg"
 
-    # Inline Keyboard Setup
+    # Inline Keyboard Layout
     keyboard = InlineKeyboardMarkup(row_width=2)
 
     # Row 1
@@ -63,7 +63,7 @@ def send_movie_response(message):
     btn_imdb = InlineKeyboardButton("⭐ IMDb Rating", url="https://www.imdb.com/")
     btn_details = InlineKeyboardButton("🎬 Full Details", url="https://www.google.com/")
 
-    # Row 3 (Dono Download Links)
+    # Row 3 (Dono Download Options)
     btn_download1 = InlineKeyboardButton("📥 Filmyzilla Link", url="https://www.filmyzilla72.com/")
     btn_download2 = InlineKeyboardButton("📥 Cinevood Link", url="https://cinevood.com/")
 
@@ -72,16 +72,25 @@ def send_movie_response(message):
     keyboard.add(btn_imdb, btn_details)
     keyboard.add(btn_download1, btn_download2)
 
-    # Send Photo Message
-    bot.send_photo(
-        chat_id=message.chat.id,
-        photo=photo_url,
-        caption=caption_text,
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
+    # Safe Message Delivery (Photo fail ho toh Text bhej dega)
+    try:
+        bot.send_photo(
+            chat_id=message.chat.id,
+            photo=photo_url,
+            caption=caption_text,
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        print(f"Photo send error: {e}")
+        bot.send_message(
+            chat_id=message.chat.id,
+            text=caption_text,
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
 
-# Messages Handler
+# Message Handler
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     send_movie_response(message)
@@ -89,10 +98,4 @@ def handle_all_messages(message):
 
 # ----------------------------------------------------
 # 4. MAIN EXECUTION
-# ----------------------------------------------------
-if __name__ == "__main__":
-    print("Starting Web Server...")
-    keep_alive()
-    
-    print("Starting Telegram Bot...")
-    bot.infinity_polling()
+#
