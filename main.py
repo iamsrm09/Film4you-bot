@@ -43,7 +43,6 @@ def init_db():
     conn.close()
 
 def clean_text(text: str) -> str:
-    """Special characters aur spaces ko clean karne ke liye."""
     if not text:
         return ""
     text = text.lower()
@@ -66,8 +65,11 @@ def search_movies_db(query: str):
     cursor = conn.cursor()
     clean_q = clean_text(query)
     
-    # Flexible keyword matching
     keywords = clean_q.split()
+    if not keywords:
+        conn.close()
+        return []
+
     sql_conditions = " AND ".join(["clean_name LIKE ?" for _ in keywords])
     params = [f"%{kw}%" for kw in keywords]
     
@@ -113,14 +115,14 @@ def fetch_tmdb_info(query: str):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name if update.effective_user else "User"
     msg = (
-        f"👋 **Hello {user_name}!**\n\n"
-        "🎬 **Welcome to Film4You Movie Search Bot!**\n\n"
-        "• Kisi bhi movie ka naam likh kar bhejiye ya `/search <movie_name>` use karein."
+        f"👋 Hello {user_name}!\n\n"
+        "🎬 Welcome to Film4You Movie Search Bot!\n\n"
+        "• Kisi bhi movie ka naam likh kar bhejiye ya /search <movie_name> use karein."
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add Bot to Group", url=f"https://t.me/{context.bot.username}?startgroup=true")]
     ])
-    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
+    await update.message.reply_text(msg, reply_markup=keyboard)
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.channel_post
@@ -142,49 +144,53 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     try:
-        # Search Local DB
         matched_files = search_movies_db(query)
-        # Fetch TMDB Details
         tmdb_info = fetch_tmdb_info(query)
 
         if not matched_files and not tmdb_info:
-            await update.message.reply_text("❌ **Movie nahi mili.** Kripya spelling check karke dubara try karein.")
+            await update.message.reply_text("❌ Movie nahi mili. Kripya spelling check karke dubara try karein.")
             return
 
         text = ""
         if tmdb_info:
             release_yr = tmdb_info['release_date'][:4] if len(tmdb_info['release_date']) >= 4 else "N/A"
             text += (
-                f"🎬 *{tmdb_info['title']}* ({release_yr})\n"
-                f"⭐ **Rating:** {tmdb_info['rating']}/10\n\n"
-                f"📝 {tmdb_info['overview'][:200]}...\n\n"
+                f"🎬 {tmdb_info['title']} ({release_yr})\n"
+                f"⭐ Rating: {tmdb_info['rating']}/10\n\n"
+                f"📝 Story:\n{tmdb_info['overview'][:250]}...\n\n"
             )
         else:
-            text += f"🔎 **Results for:** `{query}`\n\n"
+            text += f"🔎 Search Results for: {query}\n\n"
 
         buttons = []
         if matched_files:
-            text += "📂 **Available Downloads:**\n"
+            text += "✅ Status: Available in Database\n\n👇 Click Below To Get File:"
             for idx, (f_name, msg_id, _) in enumerate(matched_files, 1):
-                btn_label = f"📁 Download File #{idx} ({f_name[:20]}...)"
+                btn_label = f"📁 Download File #{idx}"
                 buttons.append([InlineKeyboardButton(btn_label, callback_data=f"get_{msg_id}")])
         else:
-            text += "❌ **Status: Not Available in Database**\n💡 Request to Admin for upload."
+            text += "❌ Status: Not Available in Database\n💡 Request to: @Iamsrm0"
 
-        keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+        # Extra Help Buttons
+        buttons.append([
+            InlineKeyboardButton("🍿 Watch Trailer", url=f"https://www.youtube.com/results?search_query={query}+trailer"),
+            InlineKeyboardButton("🔍 Search Google", url=f"https://www.google.com/search?q={query}")
+        ])
+
+        keyboard = InlineKeyboardMarkup(buttons)
 
         if tmdb_info and tmdb_info.get("poster"):
-            await update.message.reply_photo(photo=tmdb_info["poster"], caption=text, parse_mode="Markdown", reply_markup=keyboard)
+            await update.message.reply_photo(photo=tmdb_info["poster"], caption=text, reply_markup=keyboard)
         else:
-            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            await update.message.reply_text(text, reply_markup=keyboard)
 
     except Exception as e:
         logger.error(f"Search Handler Error: {e}")
-        await update.message.reply_text("⚠️ Processing me error aaya, kripya dubara try karein.")
+        await update.message.reply_text("⚠️ Response banane me error aaya. Kripya dubara try karein.")
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ **Usage:** `/search <movie_name>`", parse_mode="Markdown")
+        await update.message.reply_text("❌ Usage: /search <movie_name>")
         return
     query = " ".join(context.args)
     await process_search(update, context, query)
@@ -208,7 +214,7 @@ async def file_download_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
     except Exception as e:
         logger.error(f"Copy Message Error: {e}")
-        await query.message.reply_text("❌ Error: Verify karein ki Bot Database Channel me Admin hai.")
+        await query.message.reply_text("❌ File bhejane me error aaya. Check karein ki bot DB channel me admin hai.")
 
 # ==============================================================================
 # MAIN EXECUTION
