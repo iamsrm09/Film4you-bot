@@ -21,35 +21,56 @@ def keep_alive():
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TMDB_KEY = os.environ.get('TMDB_API_KEY') or os.environ.get('MOVIE_API_KEY')
-
 if not BOT_TOKEN: raise SystemExit("BOT_TOKEN missing")
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
-def get_movie_data(query):
+def get_full_movie_data(query):
     try:
         if not TMDB_KEY:
-            print("TMDB_KEY MISSING - Add it in Render Environment")
             return None
-        url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_KEY}&query={quote_plus(query)}"
-        res = requests.get(url, timeout=15).json()
-        print(res) # for logs
-        if not res.get('results'): return None
-        m = res['results'][0]
-        poster = f"https://image.tmdb.org/t/p/w500{m['poster_path']}" if m.get('poster_path') else None
+
+        # 1. Search Movie
+        search_url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_KEY}&query={quote_plus(query)}"
+        search_res = requests.get(search_url, timeout=10).json()
+        if not search_res.get('results'): return None
+
+        movie = search_res['results'][0]
+        movie_id = movie['id']
+
+        # 2. Get Details (for Runtime, Genres, Release Date)
+        detail_url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_KEY}"
+        details = requests.get(detail_url, timeout=10).json()
+
+        # 3. Get Cast (for Starcast)
+        cast_url = f"https://api.themoviedb.org/3/movie/{movie_id}/credits?api_key={TMDB_KEY}"
+        cast_res = requests.get(cast_url, timeout=10).json()
+        cast_list = [c['name'] for c in cast_res.get('cast', [])[:5]] # Top 5 cast
+        starcast = ", ".join(cast_list) if cast_list else "N/A"
+
+        genres = ", ".join([g['name'] for g in details.get('genres', [])]) or "N/A"
+        runtime_min = details.get('runtime', 0)
+        runtime = f"{runtime_min // 60} Hrs {runtime_min % 60} Mins" if runtime_min else "N/A"
+
+        poster = f"https://image.tmdb.org/t/p/w500{movie['poster_path']}" if movie.get('poster_path') else None
+
         return {
-            "title": m.get('title', query),
-            "year": (m.get('release_date') or "N/A")[:4],
-            "rating": round(m.get('vote_average', 0), 1),
+            "title": details.get('title', query),
+            "year": (details.get('release_date') or "N/A")[:4],
+            "release_date": details.get('release_date', 'N/A'),
+            "rating": round(details.get('vote_average', 0), 1),
+            "genres": genres,
+            "runtime": runtime,
+            "starcast": starcast,
             "poster": poster,
-            "story": m.get('overview') or "Story not available."
+            "story": details.get('overview') or movie.get('overview') or "Story not available."
         }
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"TMDB Error: {e}")
         return None
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, "🎬 *Film4you Bot is Live!* 🎬\n\nSend any movie name.\nExample: `Rango`, `KGF`, `Avengers`", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "🎬 *Film4you Bot is Live!*\n\nSend any movie name.\nExample: `Vadala`, `Rango`, `KGF`", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
 def all_movies(message):
@@ -57,21 +78,24 @@ def all_movies(message):
     if len(query) < 2: return
 
     bot.send_chat_action(message.chat.id, 'typing')
-    data = get_movie_data(query)
+    data = get_full_movie_data(query)
 
     if not data:
-        # If TMDB fails, send simple text without poster
-        bot.send_message(message.chat.id, f"❌ Could not fetch poster for *{query}*. Please check TMDB_API_KEY in Render.\n\n⭐ Rating: 8.5/10\n✅ Details Found!", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"❌ No results for *{query}*. Check TMDB_API_KEY in Render.", parse_mode="Markdown")
         return
 
+    # New Upgraded Card like your screenshot
     caption = (
         f"🎬 *{data['title']} ({data['year']})*\n"
-        f"⭐ *Rating: {data['rating']}/10*\n\n"
-        f"📝 *Story: {data['story'][:550]}*\n\n"
+        f"⭐ *Rating:* {data['rating']}/10\n"
+        f"🎭 *Genres:* {data['genres']}\n"
+        f"⏱ *Length:* {data['runtime']}\n"
+        f"📅 *Release Date:* {data['release_date']}\n"
+        f"🌟 *Starcast:* {data['starcast']}\n\n"
+        f"📝 *Story:* {data['story'][:500]}\n\n"
         f"✅ *Details Found!*"
     )
 
-    # Watch / Download button removed as you asked
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(query)}+trailer"),
@@ -88,7 +112,7 @@ def all_movies(message):
         else:
             bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
-        print(f"Send Error: {e}")
+        print(e)
         bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
 
 if __name__ == "__main__":
@@ -97,4 +121,4 @@ if __name__ == "__main__":
     except: pass
     while True:
         try: bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
-        except Exception as e: print(f"Polling Error: {e}"); time.sleep(5)
+        except Exception as e: print(e); time.sleep(5)
