@@ -32,7 +32,7 @@ def welcome(message):
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, "🎬 *Film4you Bot Live Hai!*\n\nKoi bhi movie ka naam bhejo.\nExample: `Pushpa`, `KGF`", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "🎬 *Film4you Bot Live Hai!*\n\nKoi bhi movie ka naam bhejo.\nExample: Pushpa, KGF", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
 def all_movies(message):
@@ -52,16 +52,16 @@ def all_movies(message):
         InlineKeyboardButton("🎬 Google", url=f"https://www.google.com/search?q={query}+movie")
     )
     markup.add(
-        InlineKeyboardButton("📥 Filmyzilla", url=f"https://www.filmyzilla72.com/?s={query.replace(' ', '+')}"),
-        InlineKeyboardButton("📥 Cinevood", url=f"https://cinevood.com/?s={query.replace(' ', '+')}")
-    )
-    
+        InlineKeyboardButton("📥 Filmyzilla", url=f"https://www.filmyzilla72.com/in/search?q={query}")
+        InlineKeyboardButton("📥 Cinevood", url=f"https://cinevood.com/in/search?q={query}")
+    )
+
     try:
         bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
         print(e)
 
-if __name__ == "__main__":
+if name == "main":
     keep_alive()
     print("Removing webhook and starting polling...")
     try:
@@ -76,3 +76,5 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Polling error: {e}")
             time.sleep(5)
+
+Is code me kuch change nhi Krna sirf english version Krna h
