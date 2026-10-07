@@ -179,7 +179,9 @@ def all_movies(message):
     
     # Primary Button: Dynamic HTML Web Page Link
     markup.add(
-        InlineKeyboardButton("🌐 Watch / Download Page", url=movie_web_url)
+        InlineKeyboardButton("🌐 Watch / Download Page"https://www.filmyzilla72.com/('/movie/<int:movie_id>/<string:movie_slug>')
+def get_movie(movie_id, movie_slug):
+    return f"Movie ID: {movie_id}, Slug: {movie_slug}")
     )
     markup.add(
         InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={query}+trailer"),
