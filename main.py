@@ -15,13 +15,13 @@ from pyrogram.types import (
 # ==============================================================================
 # CONFIGURATION & KEYS (Apni Details Yahan Set Karein)
 # ==============================================================================
-API_ID = int(os.getenv("API_ID", "1234567"))           # my.telegram.org se API ID (Numeric)
+API_ID = int(os.getenv("API_ID", "34125301"))           # my.telegram.org se API ID (Numeric)
 API_HASH = os.getenv("API_HASH", "YOUR_API_HASH")      # my.telegram.org se API Hash
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")   # BotFather se Bot Token
 TMDB_KEY = os.getenv("TMDB_KEY", "YOUR_TMDB_KEY")       # TMDB API Key
 
 DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID", "-1001234567890")) # Database Channel ID
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))                 # Aapki Telegram User ID (Numeric)
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6053499724"))                 # Aapki Telegram User ID (Numeric)
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
