@@ -13,19 +13,15 @@ from pyrogram.types import (
 )
 
 # ==============================================================================
-# CONFIGURATION & KEYS
+# CONFIGURATION & KEYS (Apni Details Yahan Set Karein)
 # ==============================================================================
-# Telegram API details (my.telegram.org se lein)
-API_ID = int(os.getenv("API_ID", "6053499724"))           
-API_HASH = os.getenv("API_HASH", "YOUR_API_HASH")      
+API_ID = int(os.getenv("API_ID", "1234567"))           # my.telegram.org se API ID (Numeric)
+API_HASH = os.getenv("API_HASH", "YOUR_API_HASH")      # my.telegram.org se API Hash
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")   # BotFather se Bot Token
+TMDB_KEY = os.getenv("TMDB_KEY", "YOUR_TMDB_KEY")       # TMDB API Key
 
-# Bot Details
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")   
-TMDB_KEY = os.getenv("TMDB_KEY", "YOUR_TMDB_KEY")       
-
-# Channel & Admin Info
-DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID", "-1001234567890")) 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))                 
+DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID", "-1001234567890")) # Database Channel ID
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))                 # Aapki Telegram User ID (Numeric)
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -39,7 +35,7 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# Lock for handling multiple file uploads simultaneously (100+ files)
+# Lock for handling concurrent bulk uploads safely
 FILE_LOCK = asyncio.Lock()
 
 # ==============================================================================
@@ -63,7 +59,7 @@ def init_db():
     conn.close()
 
 def clean_movie_title(raw_title: str) -> str:
-    """Extract clean title for TMDB search."""
+    """Extract clean title for TMDB search query."""
     if not raw_title:
         return ""
     title = re.sub(r'\.(mkv|mp4|avi|mov|flv|webm)$', '', raw_title, flags=re.IGNORECASE)
@@ -132,19 +128,19 @@ def fetch_tmdb_details(movie_name: str):
     return None
 
 # ==============================================================================
-# AUTO PROCESS & BULK UPLOAD HANDLER
+# ADMIN BULK FILE AUTO-PROCESSOR
 # ==============================================================================
 @app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.document | filters.video))
 async def auto_process_and_store(client: Client, message: Message):
-    """Jab Admin 1 ya 100 files forward karega, toh TMDB details auto add hoke channel me jayenge."""
+    """Admin jab 1 ya 100 files private chat me bhejega, bot unhe process karke DB channel me bhejega."""
     async with FILE_LOCK:
         file_obj = message.document or message.video
         raw_file_name = file_obj.file_name or message.caption or "Unknown_Movie"
         clean_name = clean_movie_title(raw_file_name)
 
-        status_msg = await message.reply_text(f"⏳ Processing: `{raw_file_name}`...")
+        status_msg = await message.reply_text(f"⏳ **Processing File:** `{raw_file_name}`...")
 
-        # Fetch TMDB Details
+        # Fetch Official TMDB Description & Poster
         tmdb_info = fetch_tmdb_details(raw_file_name)
 
         if tmdb_info:
@@ -152,18 +148,20 @@ async def auto_process_and_store(client: Client, message: Message):
                 f"🎬 **{tmdb_info['title']} ({tmdb_info['year']})**\n"
                 f"⭐ **Rating:** {tmdb_info['rating']}/10\n\n"
                 f"📝 **Description:**\n{tmdb_info['overview'][:300]}...\n\n"
-                f"📁 **File Name:** `{raw_file_name}`"
+                f"📁 **File Name:** `{raw_file_name}`\n"
+                f"⚡ **Uploaded via Film4You Auto Store**"
             )
             poster_url = tmdb_info.get("poster")
         else:
             formatted_caption = (
                 f"🎬 **{raw_file_name}**\n\n"
-                f"📁 **File Name:** `{raw_file_name}`"
+                f"📁 **File Name:** `{raw_file_name}`\n"
+                f"⚡ **Uploaded via Film4You Auto Store**"
             )
             poster_url = None
 
         try:
-            # 1. Forward file to Database Channel
+            # 1. Forward File to Database Channel
             sent_msg = await client.copy_message(
                 chat_id=DB_CHANNEL_ID,
                 from_chat_id=message.chat.id,
@@ -171,7 +169,7 @@ async def auto_process_and_store(client: Client, message: Message):
                 caption=formatted_caption
             )
 
-            # 2. Save metadata in SQLite
+            # 2. Save Metadata to Local Database
             save_to_db(
                 file_name=raw_file_name,
                 clean_name=clean_name,
@@ -181,16 +179,17 @@ async def auto_process_and_store(client: Client, message: Message):
                 caption=formatted_caption
             )
 
-            # 3. Save Notification
+            # 3. Notification to Admin
             await status_msg.edit_text(
-                f"✅ **File Saved Successfully!**\n"
-                f"🎬 Title: `{tmdb_info['title'] if tmdb_info else raw_file_name}`\n"
-                f"📌 Channel Msg ID: `{sent_msg.id}`"
+                f"✅ **File Saved Successfully!**\n\n"
+                f"🎬 **Title:** `{tmdb_info['title'] if tmdb_info else raw_file_name}`\n"
+                f"📌 **Channel Msg ID:** `{sent_msg.id}`\n"
+                f"📢 **Status:** Sent to Database Channel"
             )
 
         except Exception as e:
             logger.error(f"Store Error: {e}")
-            await status_msg.edit_text(f"❌ Failed to save: `{e}`")
+            await status_msg.edit_text(f"❌ **Failed to Save File:** `{e}`")
 
 # ==============================================================================
 # USER SEARCH HANDLERS
@@ -199,7 +198,8 @@ async def auto_process_and_store(client: Client, message: Message):
 async def start_handler(client: Client, message: Message):
     welcome_text = (
         f"👋 **Hello {message.from_user.first_name}!**\n\n"
-        "🎬 Welcome to Film4You Movie Search Bot!"
+        "🎬 **Welcome to Film4You Movie Search Bot!**\n\n"
+        "Movie ka naam likh kar bhejiye ya `/search <movie_name>` command use karein."
     )
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add Me to Group", url=f"https://t.me/{client.me.username}?startgroup=true")]
@@ -218,23 +218,25 @@ async def user_search_handler(client: Client, message: Message):
                 f"🎬 **{tmdb_info['title']} ({tmdb_info['year']})**\n"
                 f"⭐ **Rating:** {tmdb_info['rating']}/10\n\n"
                 f"📝 **Description:**\n{tmdb_info['overview'][:250]}...\n\n"
-                f"❌ **Status: Not Available in Database**"
+                f"❌ **Status: Not Available in Database Channel**"
             )
             buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍿 Watch Trailer", url=f"https://www.youtube.com/results?search_query={query}+trailer")]
+                [InlineKeyboardButton("🍿 Watch Trailer", url=f"https://www.youtube.com/results?search_query={query}+trailer")],
+                [InlineKeyboardButton("🔍 Search Google", url=f"https://www.google.com/search?q={query}")]
             ])
             if tmdb_info.get("poster"):
                 await message.reply_photo(photo=tmdb_info["poster"], caption=text, reply_markup=buttons)
             else:
                 await message.reply_text(text, reply_markup=buttons)
         else:
-            await message.reply_text("❌ Movie nahi mili. Kripya spelling check karein.")
+            await message.reply_text("❌ **Movie nahi mili.** Kripya spelling check karke try karein.")
         return
 
     f_name, db_msg_id, poster_url, caption = results[0]
 
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📁 Get Movie File", callback_data=f"getfile_{db_msg_id}")]
+        [InlineKeyboardButton("📁 Get Movie File", callback_data=f"getfile_{db_msg_id}")],
+        [InlineKeyboardButton("🍿 Watch Trailer", url=f"https://www.youtube.com/results?search_query={query}+trailer")]
     ])
 
     if poster_url:
@@ -257,7 +259,7 @@ async def deliver_movie_file(client: Client, callback: CallbackQuery):
         await callback.message.reply_text("❌ File bhejane me error aaya. Check karein ki bot Channel me Admin hai.")
 
 # ==============================================================================
-# MAIN APPLICATION RUNNER
+# MAIN EXECUTION
 # ==============================================================================
 if __name__ == "__main__":
     init_db()
