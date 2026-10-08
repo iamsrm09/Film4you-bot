@@ -46,7 +46,7 @@ def clean_name(text):
     text = text.split('\n')[0]
     text = re.sub(r'http\S+|t\.me/\S+|@\w+', '', text)
     text = re.sub(r'Join.*|Search.*|More.*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\b(1080p|720p|480p|2160p|4K|HDRip|WEB-DL|BluRay|ESub|x264|x265|Hindi|AAC|2\.0|mkv|mp4)\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b(1080p|720p|480p|2160p|4K|HDRip|WEB-DL|BluRay|ESub|x264|x265|Hindi|AAC|2\.0|mkv|mp4|Full Movie|Dubbed)\b', '', text, flags=re.IGNORECASE)
     text = re.sub(r'[^a-zA-Z0-9 ]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text.lower().strip()
@@ -75,7 +75,7 @@ def get_tmdb(query, original_text=""):
             q_norm = normalize_search(q)
             for item in results:
                 title = (item.get('title') or item.get('name') or "").lower()
-                if normalize_search(title) == q_norm or q.lower() == title.lower():
+                if normalize_search(title) == q_norm:
                     best_item = item
                     break
         if not best_item:
@@ -108,8 +108,10 @@ def save_handler(message):
         bot.reply_to(message, "❌ Caption me movie name likho! 🎬")
         return
     file_id = message.video.file_id if message.video else message.document.file_id
+
+    # Name se save - clean name nikalo
     c_name = clean_name(raw_caption)
-    if not c_name: c_name = raw_caption[:20].lower()
+    if not c_name: c_name = raw_caption[:30].lower()
 
     db = load_db()
     if c_name not in db: db[c_name] = []
@@ -120,6 +122,7 @@ def save_handler(message):
     caps[file_id] = raw_caption
     save_caps(caps)
 
+    # Description + Thumbnail auto change
     info = get_tmdb(raw_caption, raw_caption)
     thumb_path = None
     if info and info['poster']:
@@ -129,24 +132,27 @@ def save_handler(message):
             with open(thumb_path, 'wb') as f: f.write(resp.content)
         except: thumb_path = None
 
-    db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10" if info else raw_caption
+    if info:
+        db_caption = f"🎬 *{info['title']} ({info['year']})* ✨\n⭐ {info['rating']}/10 | 🎭 {info['genres']}\n\n📝 {info['story'][:400]}...\n\n{raw_caption}"
+    else:
+        db_caption = raw_caption
 
     try:
         if message.video:
             if thumb_path:
                 with open(thumb_path, 'rb') as tf:
-                    bot.send_video(DATABASE_CHANNEL_ID, file_id, thumb=tf, caption=db_caption)
+                    bot.send_video(DATABASE_CHANNEL_ID, file_id, thumb=tf, caption=db_caption, parse_mode="Markdown")
             else:
-                bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
+                bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption, parse_mode="Markdown")
         else:
-            bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
-        bot.reply_to(message, f"✅ Saved! 🎉\n🎬 Clean Name: `{c_name}`\n📦 Total Files for this name: {len(db[c_name])}")
+            bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=db_caption, parse_mode="Markdown")
+        bot.reply_to(message, f"✅ Saved by Name! 🎉\n🎬 Name: `{c_name}`\n🖼️ Thumb + Desc: {'Changed ✅' if thumb_path else 'Original'}\n📦 Files: {len(db[c_name])}")
     except Exception as e:
         bot.reply_to(message, f"⚠️ Channel error: {e}")
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
-    bot.send_message(message.chat.id, "🎬✨ Film4you Bot Live! ✨🎬", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "🎬✨ Film4you Bot Live! ✨🎬\n\n🔍 `the paradise` likho to `the paradise` se shuru hone wali saari movies aa jayengi!", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
@@ -158,55 +164,48 @@ def search_handler(message):
     db = load_db()
     info = get_tmdb(query, query)
 
-    # --- STRICT EXACT MATCH ---
-    found_key = None
-    # 1. Pehle exact clean name check
-    if clean_q in db:
-        found_key = clean_q
-    # 2. Normalize exact check (spiderman == spider-man)
-    else:
-        for saved_name in db.keys():
-            if normalize_search(saved_name) == norm_q:
-                found_key = saved_name
-                break
-    # 3. Agar info hai to TMDB title se exact check
-    if not found_key and info:
-        tmdb_clean = clean_name(info['title'])
-        tmdb_norm = normalize_search(tmdb_clean)
-        if tmdb_clean in db:
-            found_key = tmdb_clean
-        else:
-            for saved_name in db.keys():
-                if normalize_search(saved_name) == tmdb_norm or saved_name == tmdb_clean:
-                    found_key = saved_name
-                    break
+    # --- THE PARADISE LOGIC: Name ke aage kuch bhi ho to bhi mile ---
+    matched_keys = []
+    for saved_name in db.keys():
+        norm_saved = normalize_search(saved_name)
+        # 1. the paradise in the paradise 2026 hindi dubbed
+        if clean_q in saved_name or saved_name in clean_q:
+            matched_keys.append(saved_name)
+        # 2. theparadise in theparadise2026
+        elif norm_q in norm_saved or norm_saved in norm_q:
+            matched_keys.append(saved_name)
+        # 3. Word match: the paradise word match
+        elif all(w in saved_name for w in clean_q.split() if len(w) > 2):
+            matched_keys.append(saved_name)
 
-    print(f"Search: {query} -> clean: {clean_q} -> found: {found_key} -> DB keys: {list(db.keys())}")
+    # Remove duplicates and sort by best match (smallest length diff first)
+    matched_keys = list(set(matched_keys))
+    matched_keys.sort(key=lambda x: abs(len(x) - len(clean_q)))
+
+    print(f"Search: {query} -> matched: {matched_keys}")
 
     markup = InlineKeyboardMarkup(row_width=1)
 
     if not info:
-        if found_key:
-            files = db[found_key]
-            markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH ({len(files)} Files) 🔥", callback_data=f"get_{found_key}"))
+        if matched_keys:
+            for key in matched_keys[:5]: # Max 5 buttons
+                files = db[key]
+                markup.add(InlineKeyboardButton(f"📥 {key.title()} ({len(files)} Files) 🔥", callback_data=f"get_{key}"))
         else:
             markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
-        bot.send_message(message.chat.id, f"🎬 *{query}* 🔍", parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(message.chat.id, f"🎬 *{query}* 🔍\n\n{len(matched_keys)} results found! 👇", parse_mode="Markdown", reply_markup=markup)
         return
 
     caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 🌟 | 🎭 {info['genres']} | ⏱️ {info['runtime']}\n📅 {info['date']}\n\n📝 {info['story']}\n"
 
-    if info['type'] == 'movie':
-        if found_key:
-            files = db[found_key]
-            markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH ({len(files)} Files) 🔥", callback_data=f"get_{found_key}"))
-        else:
-            markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
+    # Agar matched keys hai to unke buttons dikhao
+    if matched_keys:
+        for key in matched_keys[:5]:
+            files = db[key]
+            # Exact naam dikhao
+            markup.add(InlineKeyboardButton(f"📥 {key.title()} - WATCH ({len(files)} Files) 🔥", callback_data=f"get_{key}"))
     else:
-        for s in info['seasons']:
-            sn = s.get('season_number')
-            if sn == 0: continue
-            markup.add(InlineKeyboardButton(f"📥 SEASON {sn} 📺✨", callback_data=f"get_{found_key}" if found_key else f"nof_{sn}"))
+        markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
 
     markup.row(
         InlineKeyboardButton("▶️ Trailer 🎥", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"),
@@ -229,19 +228,17 @@ def cb(call):
     caps = load_caps()
     if call.data.startswith('get_'):
         key = call.data[4:]
-        # --- STRICT: Sirf exact key se file bhejo, fuzzy nahi ---
         data = db.get(key)
-        # Agar exact nahi mila to normalize exact dhoondo
         if not data:
+            # Fuzzy fallback for old keys
             for k,v in db.items():
-                if normalize_search(k) == normalize_search(key) or k == key:
+                if key in k or k in key or normalize_search(key) == normalize_search(k):
                     data = v
                     key = k
                     break
-
         if data:
             files = data if isinstance(data, list) else [data]
-            bot.answer_callback_query(call.id, f"🎬 {key} - {len(files)} files 📤")
+            bot.answer_callback_query(call.id, f"🎬 {key.title()} - {len(files)} files 📤")
             for i, fid in enumerate(files, 1):
                 orig_cap = caps.get(fid, f"🎬 {key.title()} Part {i} ✨")
                 time.sleep(0.8)
@@ -250,7 +247,7 @@ def cb(call):
                     try: bot.send_video(call.message.chat.id, fid, caption=orig_cap)
                     except Exception as e: bot.send_message(call.message.chat.id, f"❌ Error: {e}")
         else:
-            bot.answer_callback_query(call.id, f"❌ File not found for {key}!", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ File not found! 😔", show_alert=True)
     else:
         bot.answer_callback_query(call.id, "⚠️ File not added yet! 📭", show_alert=True)
 
