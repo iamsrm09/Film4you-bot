@@ -21,7 +21,7 @@ CAP_FILE = "captions.json"
 
 CHANNEL_QUEUE = queue.Queue()
 ALBUM_CACHE = {}
-PROCESSED = set() # Anti-double
+PROCESSED = set()
 
 def is_duplicate(msg_id):
     if msg_id in PROCESSED:
@@ -53,12 +53,15 @@ def extract_year(text):
     m = re.search(r'\b(19|20)\d{2}\b', text)
     return m.group(0) if m else None
 
+# --- FIXED CLEAN NAME - BRACKET + TAG HATA DIYA ---
 def clean_name(text):
     if not text: return ""
     text = text.split('\n')[0]
-    text = re.sub(r'http\S+|t\.me/\S+|@\w+', '', text)
+    text = re.sub(r'@\w+|Bt_Movies_Hd|Filmsclub', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\[.*?\]', '', text) # [ @Bt_Movies_Hd ] [ @Filmsclub ] sab delete
+    text = re.sub(r'http\S+|t\.me/\S+', '', text)
     text = re.sub(r'Join.*|Search.*|More.*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\b(1080p|720p|480p|2160p|4K|HDRip|WEB-DL|BluRay|ESub|x264|x265|Hindi|AAC|2\.0|mkv|mp4|Full Movie|Dubbed)\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b(1080p|720p|480p|2160p|4K|HDRip|WEB-DL|BluRay|ESub|x264|x265|Hindi|AAC|2\.0|mkv|mp4|Full Movie|Dubbed|Hevc|Hdtc|Cinevood|CineVood)\b', '', text, flags=re.IGNORECASE)
     text = re.sub(r'[^a-zA-Z0-9 ]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text.lower().strip()
@@ -199,24 +202,30 @@ def search_handler(message):
         return text
 
     clean_q = clean_name(strip_series(query))
-    norm_q = normalize_search(clean_q)
     db = load_db()
 
     try: info = get_tmdb(query, query)
     except: info = None
 
+    # --- FIXED SEARCH - TAG + BRACKET + SERIES FIX ---
     matched_keys = []
-    search_words = [w for w in clean_q.split() if len(w) > 2]
+    search_words = [w for w in clean_q.split() if len(w) > 1]
+
     for saved_name in db.keys():
+        if len(saved_name) < 2: continue
+        if "bt_movies" in saved_name or "filmsclub" in saved_name: continue
+
         saved_stripped = clean_name(strip_series(saved_name))
+        if not saved_stripped: continue
+
         norm_saved = normalize_search(saved_stripped)
-        if clean_q in saved_stripped or saved_stripped in clean_q:
+        norm_q = normalize_search(clean_q)
+
+        if clean_q and (clean_q in saved_stripped or saved_stripped in clean_q):
             matched_keys.append(saved_name)
-        elif norm_q in norm_saved or norm_saved in norm_q:
+        elif norm_q and (norm_q in norm_saved or norm_saved in norm_q):
             matched_keys.append(saved_name)
-        elif len(search_words) >= 2 and all(w in saved_stripped for w in search_words):
-            matched_keys.append(saved_name)
-        elif len(search_words) == 1 and search_words[0] in saved_stripped:
+        elif search_words and all(w in saved_stripped for w in search_words):
             matched_keys.append(saved_name)
 
     matched_keys = list(set(matched_keys))[:10]
