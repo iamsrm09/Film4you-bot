@@ -111,7 +111,7 @@ def channel_worker():
                 if is_video:
                     if thumb_path and os.path.exists(thumb_path):
                         with open(thumb_path, 'rb') as tf:
-                            bot.send_video(DATABASE_CHANNEL_ID, file_id, thumb=tf, caption=db_caption) # NO Markdown
+                            bot.send_video(DATABASE_CHANNEL_ID, file_id, thumb=tf, caption=db_caption)
                     else:
                         bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
                 else:
@@ -143,7 +143,6 @@ def save_handler(message):
             ALBUM_CACHE[media_group] = raw_caption
         elif media_group in ALBUM_CACHE:
             raw_caption = ALBUM_CACHE[media_group]
-
     if not raw_caption:
         bot.reply_to(message, "❌ Caption me movie name likho! 🎬")
         return
@@ -165,20 +164,20 @@ def save_handler(message):
             thumb_path = f"/tmp/{file_id}.jpg"
             with open(thumb_path, 'wb') as f: f.write(resp.content)
         except: thumb_path = None
-
-    # FIX: Markdown hata diya channel caption se - 400 error fix
     if info:
         db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10 | {info['genres']}\n\n{info['story'][:400]}"
     else:
         db_caption = raw_caption
-
     is_video = True if message.video else False
     CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
     bot.reply_to(message, f"✅ Saved by Name! 🎉\n🎬 Name: `{c_name}`\n🖼️ Thumb: {'Yes' if thumb_path else 'No'}\n📦 Files: {len(db[c_name])}\n⏳ Channel queue me bhej raha hu...")
 
+# --- UPDATED START WITH NAME IN ENGLISH ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
-    bot.send_message(message.chat.id, "🎬✨ Film4you Bot Live! ✨🎬\n\n🔍 `the paradise` likho to `the paradise` se shuru hone wali saari movies aa jayengi!", parse_mode="Markdown")
+    name = message.from_user.first_name or message.from_user.username or "Friend"
+    text = f"🎬✨ Film4you Bot Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇"
+    bot.send_message(message.chat.id, text)
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
