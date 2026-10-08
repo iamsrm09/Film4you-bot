@@ -21,6 +21,15 @@ CAP_FILE = "captions.json"
 
 CHANNEL_QUEUE = queue.Queue()
 ALBUM_CACHE = {}
+PROCESSED = set() # Anti-double
+
+def is_duplicate(msg_id):
+    if msg_id in PROCESSED:
+        return True
+    PROCESSED.add(msg_id)
+    if len(PROCESSED) > 200:
+        PROCESSED.clear()
+    return False
 
 def load_db():
     if not os.path.exists(DB_FILE): return {}
@@ -97,8 +106,7 @@ def get_tmdb(query, original_text=""):
         rt = d.get('runtime',0)
         runtime = f"{rt//60}H {rt%60}M" if mtype=='movie' and rt else f"{d.get('number_of_seasons',1)} Seasons" if mtype=='tv' else "N/A"
         story = d.get('overview','')[:700] or "N/A"
-        seasons = d.get('seasons',[]) if mtype=='tv' else []
-        return {"title":title,"year":year_out,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype,"seasons":seasons}
+        return {"title":title,"year":year_out,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype}
     except Exception as e:
         print(f"TMDB Error {e}")
         return None
@@ -121,7 +129,6 @@ def channel_worker():
                 if "429" in err:
                     m = re.search(r'retry after (\d+)', err)
                     wait = int(m.group(1)) + 2 if m else 35
-                    print(f"FLOOD WAIT {wait}s")
                     time.sleep(wait)
                     CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
                 else:
@@ -136,13 +143,12 @@ Thread(target=channel_worker, daemon=True).start()
 
 @bot.message_handler(content_types=['video', 'document'])
 def save_handler(message):
+    if is_duplicate(message.message_id): return
     raw_caption = message.caption or ""
     media_group = getattr(message, 'media_group_id', None)
     if media_group:
-        if raw_caption:
-            ALBUM_CACHE[media_group] = raw_caption
-        elif media_group in ALBUM_CACHE:
-            raw_caption = ALBUM_CACHE[media_group]
+        if raw_caption: ALBUM_CACHE[media_group] = raw_caption
+        elif media_group in ALBUM_CACHE: raw_caption = ALBUM_CACHE[media_group]
     if not raw_caption:
         bot.reply_to(message, "❌ Caption me movie name likho! 🎬")
         return
@@ -170,85 +176,68 @@ def save_handler(message):
         db_caption = raw_caption
     is_video = True if message.video else False
     CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
-    bot.reply_to(message, f"✅ Saved by Name! 🎉\n🎬 Name: `{c_name}`\n🖼️ Thumb: {'Yes' if thumb_path else 'No'}\n📦 Files: {len(db[c_name])}\n⏳ Channel queue me bhej raha hu...")
+    bot.reply_to(message, f"✅ Saved! Name: {c_name} | Files: {len(db[c_name])}")
 
-# --- UPDATED START WITH NAME IN ENGLISH ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
-    name = message.from_user.first_name or message.from_user.username or "Friend"
+    if is_duplicate(message.message_id): return
+    name = message.from_user.first_name or "Friend"
     text = f"🎬✨ Film4you Bot Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇"
     bot.send_message(message.chat.id, text)
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
+    if is_duplicate(message.message_id): return
     query = message.text.strip()
     if len(query) < 2: return
 
-    # Series ke S01 E01 Season 1 sab hatao search ke liye
     def strip_series(text):
-        text = re.sub(r'\b[sS]\d{1,2}\s*[eE]\d{1,2}\b', '', text) # S01E01
-        text = re.sub(r'\b[sS]\d{1,2}\b', '', text) # S01
+        text = re.sub(r'\b[sS]\d{1,2}\s*[eE]\d{1,2}\b', '', text)
+        text = re.sub(r'\b[sS]\d{1,2}\b', '', text)
         text = re.sub(r'\bseason\s*\d+\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\bepisode\s*\d+\b', '', text, flags=re.IGNORECASE)
         return text
 
     clean_q = clean_name(strip_series(query))
     norm_q = normalize_search(clean_q)
-
     db = load_db()
-    print(f"DB has {len(db)} keys")
 
-    try:
-        info = get_tmdb(query, query)
-    except:
-        info = None
+    try: info = get_tmdb(query, query)
+    except: info = None
 
-    # --- SUPER SEARCH ---
     matched_keys = []
     search_words = [w for w in clean_q.split() if len(w) > 2]
-
     for saved_name in db.keys():
         saved_stripped = clean_name(strip_series(saved_name))
         norm_saved = normalize_search(saved_stripped)
-
-        # 1. Direct contain
         if clean_q in saved_stripped or saved_stripped in clean_q:
             matched_keys.append(saved_name)
-        # 2. Without space
         elif norm_q in norm_saved or norm_saved in norm_q:
             matched_keys.append(saved_name)
-        # 3. All words match (Game of Thrones)
         elif len(search_words) >= 2 and all(w in saved_stripped for w in search_words):
             matched_keys.append(saved_name)
-        # 4. Single word like Spiderman
         elif len(search_words) == 1 and search_words[0] in saved_stripped:
             matched_keys.append(saved_name)
 
-    matched_keys = list(set(matched_keys))
-    matched_keys.sort(key=lambda x: abs(len(clean_name(x)) - len(clean_q)))
-    print(f"Search: {query} -> {matched_keys}")
+    matched_keys = list(set(matched_keys))[:10]
 
     markup = InlineKeyboardMarkup(row_width=1)
-
     if matched_keys:
-        for key in matched_keys[:10]: # 10 tak dikhao
+        for key in matched_keys:
             files = db[key]
-            # Short name button pe
             btn_name = key.title()[:40]
             markup.add(InlineKeyboardButton(f"📥 {btn_name} ({len(files)} Files)", callback_data=f"get_{key}"))
     else:
         markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
 
-    # Agar TMDB nahi mila to bhi result bhejo
     if not info:
         if matched_keys:
             bot.send_message(message.chat.id, f"🎬 *{query}* 🔍\n\n{len(matched_keys)} results found! 👇", parse_mode="Markdown", reply_markup=markup)
         else:
-            bot.send_message(message.chat.id, f"❌ *{query}* not found in database!\n\nSave karo pehle.", parse_mode="Markdown", reply_markup=markup)
+            bot.send_message(message.chat.id, f"❌ *{query}* not found!", parse_mode="Markdown", reply_markup=markup)
         return
 
     caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 🌟 | 🎭 {info['genres']} | ⏱️ {info['runtime']}\n📅 {info['date']}\n\n📝 {info['story']}\n"
-
     markup.row(
         InlineKeyboardButton("▶️ Trailer 🎥", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"),
         InlineKeyboardButton("📍 Where to Watch 🍿", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}")
@@ -257,61 +246,13 @@ def search_handler(message):
         InlineKeyboardButton("⭐ IMDb Top 🏆", url=f"https://www.imdb.com/find?q={quote_plus(info['title'])}"),
         InlineKeyboardButton("🎬 Google 🔎", url=f"https://www.google.com/search?q={quote_plus(info['title'])}")
     )
-
     try:
         if info['poster']:
             bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
         else:
             bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
-    except Exception as e:
-        print(f"Send error {e}")
+    except:
         bot.send_message(message.chat.id, caption, reply_markup=markup)
-    clean_q = clean_name(query)
-    norm_q = normalize_search(clean_q)
-    db = load_db()
-    info = get_tmdb(query, query)
-    matched_keys = []
-    for saved_name in db.keys():
-        norm_saved = normalize_search(saved_name)
-        if clean_q in saved_name or saved_name in clean_q:
-            matched_keys.append(saved_name)
-        elif norm_q in norm_saved or norm_saved in norm_q:
-            matched_keys.append(saved_name)
-        elif all(w in saved_name for w in clean_q.split() if len(w) > 2):
-            matched_keys.append(saved_name)
-    matched_keys = list(set(matched_keys))
-    matched_keys.sort(key=lambda x: abs(len(x) - len(clean_q)))
-    print(f"Search: {query} -> matched: {matched_keys}")
-    markup = InlineKeyboardMarkup(row_width=1)
-    if not info:
-        if matched_keys:
-            for key in matched_keys[:5]:
-                files = db[key]
-                markup.add(InlineKeyboardButton(f"📥 {key.title()} ({len(files)} Files) 🔥", callback_data=f"get_{key}"))
-        else:
-            markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
-        bot.send_message(message.chat.id, f"🎬 *{query}* 🔍\n\n{len(matched_keys)} results found! 👇", parse_mode="Markdown", reply_markup=markup)
-        return
-    caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 🌟 | 🎭 {info['genres']} | ⏱️ {info['runtime']}\n📅 {info['date']}\n\n📝 {info['story']}\n"
-    if matched_keys:
-        for key in matched_keys[:5]:
-            files = db[key]
-            markup.add(InlineKeyboardButton(f"📥 {key.title()} - WATCH ({len(files)} Files) 🔥", callback_data=f"get_{key}"))
-    else:
-        markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
-    markup.row(
-        InlineKeyboardButton("▶️ Trailer 🎥", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"),
-        InlineKeyboardButton("📍 Where to Watch 🍿", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}")
-    )
-    markup.row(
-        InlineKeyboardButton("⭐ IMDb Top 🏆", url=f"https://www.imdb.com/find?q={quote_plus(info['title'])}"),
-        InlineKeyboardButton("🎬 Google 🔎", url=f"https://www.google.com/search?q={quote_plus(info['title'])}")
-    )
-    if info['poster']:
-        try: bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
-        except: bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
-    else:
-        bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
 def cb(call):
@@ -323,14 +264,12 @@ def cb(call):
         if not data:
             for k,v in db.items():
                 if key in k or k in key or normalize_search(key) == normalize_search(k):
-                    data = v
-                    key = k
-                    break
+                    data = v; key = k; break
         if data:
             files = data if isinstance(data, list) else [data]
             bot.answer_callback_query(call.id, f"🎬 {key.title()} - {len(files)} files 📤")
-            for i, fid in enumerate(files, 1):
-                orig_cap = caps.get(fid, f"🎬 {key.title()} Part {i} ✨")
+            for fid in files:
+                orig_cap = caps.get(fid, f"🎬 {key.title()} ✨")
                 time.sleep(0.8)
                 try: bot.send_document(call.message.chat.id, fid, caption=orig_cap)
                 except:
