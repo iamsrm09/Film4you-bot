@@ -1,4 +1,4 @@
-import os, time, requests, json, re
+import os, time, requests, json, re, queue
 from threading import Thread
 from flask import Flask
 import telebot
@@ -18,6 +18,9 @@ DATABASE_CHANNEL_ID = -1004341107282
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 DB_FILE = "database.json"
 CAP_FILE = "captions.json"
+
+CHANNEL_QUEUE = queue.Queue()
+ALBUM_CACHE = {}
 
 def load_db():
     if not os.path.exists(DB_FILE): return {}
@@ -80,7 +83,6 @@ def get_tmdb(query, original_text=""):
                     break
         if not best_item:
             best_item = results[0]
-
         mtype = best_item['media_type']
         mid = best_item['id']
         d = requests.get(f"https://api.themoviedb.org/3/{mtype}/{mid}?api_key={TMDB_KEY}", timeout=10).json()
@@ -101,28 +103,60 @@ def get_tmdb(query, original_text=""):
         print(f"TMDB Error {e}")
         return None
 
+def channel_worker():
+    while True:
+        try:
+            file_id, db_caption, is_video, thumb_path = CHANNEL_QUEUE.get()
+            try:
+                if is_video:
+                    if thumb_path and os.path.exists(thumb_path):
+                        with open(thumb_path, 'rb') as tf:
+                            bot.send_video(DATABASE_CHANNEL_ID, file_id, thumb=tf, caption=db_caption) # NO Markdown
+                    else:
+                        bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
+                else:
+                    bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
+            except Exception as e:
+                err = str(e)
+                if "429" in err:
+                    m = re.search(r'retry after (\d+)', err)
+                    wait = int(m.group(1)) + 2 if m else 35
+                    print(f"FLOOD WAIT {wait}s")
+                    time.sleep(wait)
+                    CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
+                else:
+                    print(f"Channel error: {e}")
+            time.sleep(3.5)
+            CHANNEL_QUEUE.task_done()
+        except Exception as e:
+            print(f"Worker error {e}")
+            time.sleep(3)
+
+Thread(target=channel_worker, daemon=True).start()
+
 @bot.message_handler(content_types=['video', 'document'])
 def save_handler(message):
     raw_caption = message.caption or ""
+    media_group = getattr(message, 'media_group_id', None)
+    if media_group:
+        if raw_caption:
+            ALBUM_CACHE[media_group] = raw_caption
+        elif media_group in ALBUM_CACHE:
+            raw_caption = ALBUM_CACHE[media_group]
+
     if not raw_caption:
         bot.reply_to(message, "❌ Caption me movie name likho! 🎬")
         return
     file_id = message.video.file_id if message.video else message.document.file_id
-
-    # Name se save - clean name nikalo
     c_name = clean_name(raw_caption)
     if not c_name: c_name = raw_caption[:30].lower()
-
     db = load_db()
     if c_name not in db: db[c_name] = []
     if file_id not in db[c_name]: db[c_name].append(file_id)
     save_db(db)
-
     caps = load_caps()
     caps[file_id] = raw_caption
     save_caps(caps)
-
-    # Description + Thumbnail auto change
     info = get_tmdb(raw_caption, raw_caption)
     thumb_path = None
     if info and info['poster']:
@@ -132,23 +166,15 @@ def save_handler(message):
             with open(thumb_path, 'wb') as f: f.write(resp.content)
         except: thumb_path = None
 
+    # FIX: Markdown hata diya channel caption se - 400 error fix
     if info:
-        db_caption = f"🎬 *{info['title']} ({info['year']})* ✨\n⭐ {info['rating']}/10 | 🎭 {info['genres']}\n\n📝 {info['story'][:400]}...\n\n{raw_caption}"
+        db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10 | {info['genres']}\n\n{info['story'][:400]}"
     else:
         db_caption = raw_caption
 
-    try:
-        if message.video:
-            if thumb_path:
-                with open(thumb_path, 'rb') as tf:
-                    bot.send_video(DATABASE_CHANNEL_ID, file_id, thumb=tf, caption=db_caption, parse_mode="Markdown")
-            else:
-                bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption, parse_mode="Markdown")
-        else:
-            bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=db_caption, parse_mode="Markdown")
-        bot.reply_to(message, f"✅ Saved by Name! 🎉\n🎬 Name: `{c_name}`\n🖼️ Thumb + Desc: {'Changed ✅' if thumb_path else 'Original'}\n📦 Files: {len(db[c_name])}")
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ Channel error: {e}")
+    is_video = True if message.video else False
+    CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
+    bot.reply_to(message, f"✅ Saved by Name! 🎉\n🎬 Name: `{c_name}`\n🖼️ Thumb: {'Yes' if thumb_path else 'No'}\n📦 Files: {len(db[c_name])}\n⏳ Channel queue me bhej raha hu...")
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
@@ -158,55 +184,39 @@ def start_handler(message):
 def search_handler(message):
     query = message.text.strip()
     if len(query) < 2: return
-
     clean_q = clean_name(query)
     norm_q = normalize_search(clean_q)
     db = load_db()
     info = get_tmdb(query, query)
-
-    # --- THE PARADISE LOGIC: Name ke aage kuch bhi ho to bhi mile ---
     matched_keys = []
     for saved_name in db.keys():
         norm_saved = normalize_search(saved_name)
-        # 1. the paradise in the paradise 2026 hindi dubbed
         if clean_q in saved_name or saved_name in clean_q:
             matched_keys.append(saved_name)
-        # 2. theparadise in theparadise2026
         elif norm_q in norm_saved or norm_saved in norm_q:
             matched_keys.append(saved_name)
-        # 3. Word match: the paradise word match
         elif all(w in saved_name for w in clean_q.split() if len(w) > 2):
             matched_keys.append(saved_name)
-
-    # Remove duplicates and sort by best match (smallest length diff first)
     matched_keys = list(set(matched_keys))
     matched_keys.sort(key=lambda x: abs(len(x) - len(clean_q)))
-
     print(f"Search: {query} -> matched: {matched_keys}")
-
     markup = InlineKeyboardMarkup(row_width=1)
-
     if not info:
         if matched_keys:
-            for key in matched_keys[:5]: # Max 5 buttons
+            for key in matched_keys[:5]:
                 files = db[key]
                 markup.add(InlineKeyboardButton(f"📥 {key.title()} ({len(files)} Files) 🔥", callback_data=f"get_{key}"))
         else:
             markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
         bot.send_message(message.chat.id, f"🎬 *{query}* 🔍\n\n{len(matched_keys)} results found! 👇", parse_mode="Markdown", reply_markup=markup)
         return
-
     caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 🌟 | 🎭 {info['genres']} | ⏱️ {info['runtime']}\n📅 {info['date']}\n\n📝 {info['story']}\n"
-
-    # Agar matched keys hai to unke buttons dikhao
     if matched_keys:
         for key in matched_keys[:5]:
             files = db[key]
-            # Exact naam dikhao
             markup.add(InlineKeyboardButton(f"📥 {key.title()} - WATCH ({len(files)} Files) 🔥", callback_data=f"get_{key}"))
     else:
         markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
-
     markup.row(
         InlineKeyboardButton("▶️ Trailer 🎥", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"),
         InlineKeyboardButton("📍 Where to Watch 🍿", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}")
@@ -215,7 +225,6 @@ def search_handler(message):
         InlineKeyboardButton("⭐ IMDb Top 🏆", url=f"https://www.imdb.com/find?q={quote_plus(info['title'])}"),
         InlineKeyboardButton("🎬 Google 🔎", url=f"https://www.google.com/search?q={quote_plus(info['title'])}")
     )
-
     if info['poster']:
         try: bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
         except: bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
@@ -230,7 +239,6 @@ def cb(call):
         key = call.data[4:]
         data = db.get(key)
         if not data:
-            # Fuzzy fallback for old keys
             for k,v in db.items():
                 if key in k or k in key or normalize_search(key) == normalize_search(k):
                     data = v
