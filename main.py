@@ -7,12 +7,9 @@ from urllib.parse import quote_plus
 
 app = Flask('')
 @app.route('/')
-def home():
-    return "Bot is Live!"
-def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
-def keep_alive():
-    Thread(target=run_flask, daemon=True).start()
+def home(): return "Bot is Live!"
+def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+def keep_alive(): Thread(target=run_flask, daemon=True).start()
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TMDB_KEY = os.environ.get('TMDB_API_KEY')
@@ -23,84 +20,83 @@ DB_FILE = "database.json"
 CAP_FILE = "captions.json"
 
 def load_db():
-    if not os.path.exists(DB_FILE):
-        return {}
+    if not os.path.exists(DB_FILE): return {}
     try:
-        with open(DB_FILE,'r') as f:
-            return json.load(f)
-    except:
-        return {}
+        with open(DB_FILE,'r') as f: return json.load(f)
+    except: return {}
 
 def save_db(data):
-    with open(DB_FILE,'w') as f:
-        json.dump(data, f)
+    with open(DB_FILE,'w') as f: json.dump(data, f)
 
 def load_caps():
-    if not os.path.exists(CAP_FILE):
-        return {}
+    if not os.path.exists(CAP_FILE): return {}
     try:
-        with open(CAP_FILE,'r') as f:
-            return json.load(f)
-    except:
-        return {}
+        with open(CAP_FILE,'r') as f: return json.load(f)
+    except: return {}
 
 def save_caps(data):
-    with open(CAP_FILE,'w') as f:
-        json.dump(data, f, ensure_ascii=False)
+    with open(CAP_FILE,'w') as f: json.dump(data, f, ensure_ascii=False)
+
+def extract_year(text):
+    m = re.search(r'\b(19|20)\d{2}\b', text)
+    return m.group(0) if m else None
 
 def clean_name(text):
-    if not text:
-        return ""
+    if not text: return ""
     text = text.split('\n')[0]
     text = re.sub(r'http\S+|t\.me/\S+|@\w+', '', text)
     text = re.sub(r'Join.*|Search.*|More.*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'1080p|720p|480p|2160p|4K|HDRip|WEB-DL|BluRay|ESub|x264|x265', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'S\d+|Season \d+|Part \d+|20\d{2}|19\d{2}', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b(1080p|720p|480p|2160p|4K|HDRip|WEB-DL|BluRay|ESub|x264|x265|Hindi|AAC|2\.0|mkv|mp4)\b', '', text, flags=re.IGNORECASE)
     text = re.sub(r'[^a-zA-Z0-9 ]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text.lower().strip()
 
 def normalize_search(text):
-    # spiderman = spider-man = spider man
     return text.lower().replace(" ", "").replace("-", "").strip()
 
-def get_tmdb(query):
-    if not TMDB_KEY:
-        return None
+def get_tmdb(query, original_text=""):
+    if not TMDB_KEY: return None
     q = clean_name(query)
-    if len(q) < 2:
-        q = query
+    year = extract_year(original_text or query)
+    if len(q) < 2: q = query
     try:
         url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={quote_plus(q)}"
         r = requests.get(url, timeout=10).json()
-        if not r.get('results'):
-            return None
-        item = None
-        for x in r['results']:
-            if x.get('media_type') in ['movie','tv']:
-                item = x
-                break
-        if not item:
-            return None
-        mtype = item['media_type']
-        mid = item['id']
+        if not r.get('results'): return None
+        results = [x for x in r['results'] if x.get('media_type') in ['movie','tv']][:10]
+        best_item = None
+        if year:
+            for item in results:
+                r_date = item.get('release_date') or item.get('first_air_date') or ""
+                if year in r_date:
+                    best_item = item
+                    break
+        if not best_item:
+            q_norm = normalize_search(q)
+            for item in results:
+                title = (item.get('title') or item.get('name') or "").lower()
+                if normalize_search(title) == q_norm or q.lower() == title.lower():
+                    best_item = item
+                    break
+        if not best_item:
+            best_item = results[0]
+
+        mtype = best_item['media_type']
+        mid = best_item['id']
         d = requests.get(f"https://api.themoviedb.org/3/{mtype}/{mid}?api_key={TMDB_KEY}", timeout=10).json()
         title = d.get('title') or d.get('name') or q
-        poster_path = item.get('poster_path')
+        poster_path = best_item.get('poster_path')
         poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
         rating = round(d.get('vote_average',0),1)
         glist = [g['name'] for g in d.get('genres',[])][:2]
         genres = ", ".join(glist) if glist else "N/A"
         date = d.get('release_date') or d.get('first_air_date') or "N/A"
-        year = date[:4] if len(date)>=4 else "N/A"
+        year_out = date[:4] if len(date)>=4 else "N/A"
         rt = d.get('runtime',0)
-        if mtype == 'movie':
-            runtime = f"{rt//60}H {rt%60}M" if rt else "N/A"
-        else:
-            runtime = f"{d.get('number_of_seasons',1)} Seasons"
+        runtime = f"{rt//60}H {rt%60}M" if mtype=='movie' and rt else f"{d.get('number_of_seasons',1)} Seasons" if mtype=='tv' else "N/A"
         story = d.get('overview','')[:700] or "N/A"
         seasons = d.get('seasons',[]) if mtype=='tv' else []
-        return {"title":title,"year":year,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype,"seasons":seasons}
+        return {"title":title,"year":year_out,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype,"seasons":seasons}
     except Exception as e:
         print(f"TMDB Error {e}")
         return None
@@ -113,34 +109,27 @@ def save_handler(message):
         return
     file_id = message.video.file_id if message.video else message.document.file_id
     c_name = clean_name(raw_caption)
-    if not c_name:
-        c_name = raw_caption[:20].lower()
+    if not c_name: c_name = raw_caption[:20].lower()
 
     db = load_db()
-    if c_name not in db:
-        db[c_name] = []
-    db[c_name].append(file_id)
+    if c_name not in db: db[c_name] = []
+    if file_id not in db[c_name]: db[c_name].append(file_id)
     save_db(db)
 
     caps = load_caps()
     caps[file_id] = raw_caption
     save_caps(caps)
 
-    info = get_tmdb(raw_caption)
+    info = get_tmdb(raw_caption, raw_caption)
     thumb_path = None
     if info and info['poster']:
         try:
             resp = requests.get(info['poster'], timeout=15)
             thumb_path = f"/tmp/{file_id}.jpg"
-            with open(thumb_path, 'wb') as f:
-                f.write(resp.content)
-        except:
-            thumb_path = None
+            with open(thumb_path, 'wb') as f: f.write(resp.content)
+        except: thumb_path = None
 
-    if info:
-        db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10"
-    else:
-        db_caption = raw_caption
+    db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10" if info else raw_caption
 
     try:
         if message.video:
@@ -151,49 +140,48 @@ def save_handler(message):
                 bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
         else:
             bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
-        bot.reply_to(message, f"✅ Saved! 🎉\n🎬 Name: {c_name}\n🖼️ Thumb: {'Yes ✅' if thumb_path else 'No ❌'}\n📦 Total: {len(db[c_name])} Files")
+        bot.reply_to(message, f"✅ Saved! 🎉\n🎬 Clean Name: `{c_name}`\n📦 Total Files for this name: {len(db[c_name])}")
     except Exception as e:
         bot.reply_to(message, f"⚠️ Channel error: {e}")
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
-    bot.send_message(message.chat.id, "🎬✨ Film4you Bot Live! ✨🎬\n\n🔍 Movie name bhejo\n💾 Video bhejo caption ke saath", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "🎬✨ Film4you Bot Live! ✨🎬", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
     query = message.text.strip()
-    if len(query) < 2:
-        return
+    if len(query) < 2: return
 
     clean_q = clean_name(query)
     norm_q = normalize_search(clean_q)
     db = load_db()
-    info = get_tmdb(query)
+    info = get_tmdb(query, query)
 
+    # --- STRICT EXACT MATCH ---
     found_key = None
-    for saved_name in db.keys():
-        norm_saved = normalize_search(saved_name)
-        # Fix for Spiderman vs Spider-man
-        if clean_q in saved_name or saved_name in clean_q:
-            found_key = saved_name
-            break
-        if norm_q in norm_saved or norm_saved in norm_q:
-            found_key = saved_name
-            break
-        if len(set(clean_q.split()) & set(saved_name.split())) >= 1 and len(clean_q) > 3:
-            found_key = saved_name
-            break
-
+    # 1. Pehle exact clean name check
+    if clean_q in db:
+        found_key = clean_q
+    # 2. Normalize exact check (spiderman == spider-man)
+    else:
+        for saved_name in db.keys():
+            if normalize_search(saved_name) == norm_q:
+                found_key = saved_name
+                break
+    # 3. Agar info hai to TMDB title se exact check
     if not found_key and info:
         tmdb_clean = clean_name(info['title'])
         tmdb_norm = normalize_search(tmdb_clean)
-        for saved_name in db.keys():
-            if tmdb_clean in saved_name or saved_name in tmdb_clean:
-                found_key = saved_name
-                break
-            if tmdb_norm in normalize_search(saved_name) or normalize_search(saved_name) in tmdb_norm:
-                found_key = saved_name
-                break
+        if tmdb_clean in db:
+            found_key = tmdb_clean
+        else:
+            for saved_name in db.keys():
+                if normalize_search(saved_name) == tmdb_norm or saved_name == tmdb_clean:
+                    found_key = saved_name
+                    break
+
+    print(f"Search: {query} -> clean: {clean_q} -> found: {found_key} -> DB keys: {list(db.keys())}")
 
     markup = InlineKeyboardMarkup(row_width=1)
 
@@ -203,14 +191,6 @@ def search_handler(message):
             markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH ({len(files)} Files) 🔥", callback_data=f"get_{found_key}"))
         else:
             markup.add(InlineKeyboardButton(f"📥 DOWNLOAD & WATCH 🎬💾", callback_data=f"nof_{query}"))
-        markup.row(
-            InlineKeyboardButton("▶️ Trailer 🎥", url=f"https://www.youtube.com/results?search_query={quote_plus(query)}+trailer"),
-            InlineKeyboardButton("📍 Where to Watch 🍿", url=f"https://www.justwatch.com/in/search?q={quote_plus(query)}")
-        )
-        markup.row(
-            InlineKeyboardButton("⭐ IMDb Top 🏆", url=f"https://www.imdb.com/find?q={quote_plus(query)}"),
-            InlineKeyboardButton("🎬 Google 🔎", url=f"https://www.google.com/search?q={quote_plus(query)}")
-        )
         bot.send_message(message.chat.id, f"🎬 *{query}* 🔍", parse_mode="Markdown", reply_markup=markup)
         return
 
@@ -225,17 +205,8 @@ def search_handler(message):
     else:
         for s in info['seasons']:
             sn = s.get('season_number')
-            if sn == 0:
-                continue
-            s_key = None
-            for saved_name in db.keys():
-                if normalize_search(clean_name(info['title'])) in normalize_search(saved_name) or clean_q in saved_name:
-                    s_key = saved_name
-                    break
-            if s_key:
-                markup.add(InlineKeyboardButton(f"📥 SEASON {sn} 📺✨", callback_data=f"get_{s_key}"))
-            else:
-                markup.add(InlineKeyboardButton(f"📥 SEASON {sn} 📺", callback_data=f"nof_{sn}"))
+            if sn == 0: continue
+            markup.add(InlineKeyboardButton(f"📥 SEASON {sn} 📺✨", callback_data=f"get_{found_key}" if found_key else f"nof_{sn}"))
 
     markup.row(
         InlineKeyboardButton("▶️ Trailer 🎥", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"),
@@ -247,10 +218,8 @@ def search_handler(message):
     )
 
     if info['poster']:
-        try:
-            bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
-        except:
-            bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
+        try: bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
+        except: bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
     else:
         bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
 
@@ -260,41 +229,35 @@ def cb(call):
     caps = load_caps()
     if call.data.startswith('get_'):
         key = call.data[4:]
+        # --- STRICT: Sirf exact key se file bhejo, fuzzy nahi ---
         data = db.get(key)
+        # Agar exact nahi mila to normalize exact dhoondo
         if not data:
             for k,v in db.items():
-                if key in k or k in key or normalize_search(key) in normalize_search(k):
+                if normalize_search(k) == normalize_search(key) or k == key:
                     data = v
                     key = k
                     break
+
         if data:
             files = data if isinstance(data, list) else [data]
-            bot.answer_callback_query(call.id, f"🎬 Sending {len(files)} files... 📤")
+            bot.answer_callback_query(call.id, f"🎬 {key} - {len(files)} files 📤")
             for i, fid in enumerate(files, 1):
                 orig_cap = caps.get(fid, f"🎬 {key.title()} Part {i} ✨")
                 time.sleep(0.8)
-                try:
-                    bot.send_document(call.message.chat.id, fid, caption=orig_cap)
+                try: bot.send_document(call.message.chat.id, fid, caption=orig_cap)
                 except:
-                    try:
-                        bot.send_video(call.message.chat.id, fid, caption=orig_cap)
-                    except Exception as e:
-                        bot.send_message(call.message.chat.id, f"❌ Error: {e}")
+                    try: bot.send_video(call.message.chat.id, fid, caption=orig_cap)
+                    except Exception as e: bot.send_message(call.message.chat.id, f"❌ Error: {e}")
         else:
-            bot.answer_callback_query(call.id, "❌ File not found! 😔", show_alert=True)
+            bot.answer_callback_query(call.id, f"❌ File not found for {key}!", show_alert=True)
     else:
         bot.answer_callback_query(call.id, "⚠️ File not added yet! 📭", show_alert=True)
 
 if __name__ == "__main__":
     keep_alive()
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except:
-        pass
+    try: bot.remove_webhook(); time.sleep(1)
+    except: pass
     while True:
-        try:
-            bot.polling(none_stop=True, timeout=60)
-        except Exception as e:
-            print(e)
-            time.sleep(5)
+        try: bot.polling(none_stop=True, timeout=60)
+        except Exception as e: print(e); time.sleep(5)
