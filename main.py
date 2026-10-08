@@ -7,148 +7,160 @@ import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 
-# --- Keep Alive Server for Render ---
 app = Flask('')
 @app.route('/')
 def home():
     return "Film4you Bot is Live!"
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 
 def keep_alive():
-    t = Thread(target=run_flask, daemon=True)
-    t.start()
+    Thread(target=run_flask, daemon=True).start()
 
-# --- Bot Config ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-TMDB_KEY = os.environ.get('TMDB_API_KEY') or os.environ.get('MOVIE_API_KEY')
+TMDB_KEY = os.environ.get('TMDB_API_KEY')
+DATABASE_CHANNEL_ID = -1004341107282  # Your Database Channel ID
 
 if not BOT_TOKEN:
-    raise SystemExit("BOT_TOKEN is missing in Render Environment")
+    raise SystemExit("BOT_TOKEN missing")
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
-def get_full_data(query):
-    """Fetch Movie or TV Show data from TMDB"""
+def get_tmdb_info(query):
+    """Fetch movie/series info from TMDB for beautiful caption"""
     if not TMDB_KEY:
-        print("ERROR: TMDB_API_KEY missing in Render")
         return None
     try:
-        # 1. Multi search for Movie and TV
         search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={quote_plus(query)}"
         res = requests.get(search_url, timeout=15).json()
-        
         if not res.get('results'):
             return None
 
-        # Get first movie or tv result
-        item = None
-        for r in res['results']:
-            if r.get('media_type') in ['movie', 'tv']:
-                item = r
-                break
+        item = next((r for r in res['results'] if r.get('media_type') in ['movie', 'tv']), None)
         if not item:
             return None
 
         media_type = item['media_type']
         media_id = item['id']
 
-        # 2. Get Details
         detail_url = f"https://api.themoviedb.org/3/{media_type}/{media_id}?api_key={TMDB_KEY}"
         details = requests.get(detail_url, timeout=15).json()
 
-        # 3. Get Cast
-        cast_url = f"https://api.themoviedb.org/3/{media_type}/{media_id}/credits?api_key={TMDB_KEY}"
-        cast_res = requests.get(cast_url, timeout=15).json()
-        cast_list = [c['name'] for c in cast_res.get('cast', [])[:5]]
-        starcast = ", ".join(cast_list) if cast_list else "N/A"
-
-        genres = ", ".join([g['name'] for g in details.get('genres', [])]) or "N/A"
-
+        title = details.get('title') or details.get('name') or query
+        poster = f"https://image.tmdb.org/t/p/w500{item.get('poster_path')}" if item.get('poster_path') else None
+        rating = round(details.get('vote_average', 0), 1)
+        genres = ", ".join([g['name'] for g in details.get('genres', [])][:3]) or "N/A"
+        
+        release_date = details.get('release_date') or details.get('first_air_date') or "N/A"
+        year = release_date[:4] if release_date != "N/A" else "N/A"
+        
         if media_type == 'movie':
             runtime_min = details.get('runtime', 0)
-            runtime = f"{runtime_min // 60} Hrs {runtime_min % 60} Mins" if runtime_min else "N/A"
-            title = details.get('title', query)
-            release_date = details.get('release_date', 'N/A')
-        else:  # tv show
-            seasons = details.get('number_of_seasons', 1)
-            runtime = f"{seasons} Season(s)"
-            title = details.get('name', query)
-            release_date = details.get('first_air_date', 'N/A')
+            runtime = f"{runtime_min // 60}H {runtime_min % 60}M" if runtime_min else "N/A"
+        else:
+            runtime = f"{details.get('number_of_seasons', 1)} Season(s)"
 
-        poster_url = f"https://image.tmdb.org/t/p/w500{item.get('poster_path')}" if item.get('poster_path') else None
+        story = details.get('overview', '')[:500] or "Story not available."
 
         return {
             "title": title,
-            "year": (release_date or "N/A")[:4],
-            "release_date": release_date,
-            "rating": round(details.get('vote_average', 0), 1),
+            "year": year,
+            "rating": rating,
             "genres": genres,
             "runtime": runtime,
-            "starcast": starcast,
-            "poster": poster_url,
-            "story": details.get('overview') or "Story not available.",
-            "type": media_type.upper()
+            "release_date": release_date,
+            "poster": poster,
+            "story": story,
+            "type": media_type
         }
     except Exception as e:
         print(f"TMDB Error: {e}")
         return None
 
-@bot.message_handler(commands=['start'])
-def start_handler(message):
-    bot.send_message(
-        message.chat.id,
-        "🎬 *Film4you Bot is Live!* 🎬\n\nSend any Movie or Web Series name.\nExample: `Rango`, `House of the Dragon`",
-        parse_mode="Markdown"
-    )
-
-@bot.message_handler(func=lambda m: True)
-def movie_handler(message):
-    query = message.text.strip()
-    if len(query) < 2:
+# --- ADMIN: SAVE MOVIE TO DATABASE CHANNEL WITH TMDB CAPTION ---
+@bot.message_handler(content_types=['video', 'document'])
+def save_movie_handler(message):
+    original_caption = message.caption
+    if not original_caption:
+        bot.reply_to(message, "⚠️ Please send video with caption as movie name.\nExample: `Rango` or `House of the Dragon S01`")
         return
 
-    bot.send_chat_action(message.chat.id, 'typing')
-    data = get_full_data(query)
+    search_name = original_caption.strip()
+    bot.reply_to(message, f"🔍 Fetching TMDB details for *{search_name}*...", parse_mode="Markdown")
 
-    if not data:
-        bot.send_message(
-            message.chat.id,
-            f"❌ No results for *{query}*.\nTry with correct spelling like `House of the Dragon`",
-            parse_mode="Markdown"
+    info = get_tmdb_info(search_name)
+
+    if info:
+        beautiful_caption = (
+            f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()}\n"
+            f"⭐ *Rating:* {info['rating']}/10\n"
+            f"🎭 *Genres:* {info['genres']}\n"
+            f"⏱ *Length:* {info['runtime']}\n"
+            f"📅 *Release:* {info['release_date']}\n\n"
+            f"📝 *Story:* {info['story']}\n\n"
+            f"🔑 *Search Key:* `{search_name.lower()}`\n"
+            f"✅ @Film4you1bot"
         )
+    else:
+        beautiful_caption = (
+            f"🎬 *{search_name}*\n\n"
+            f"🔑 *Search Key:* `{search_name.lower()}`\n"
+            f"✅ @Film4you1bot"
+        )
+
+    # Forward/Save to Database Channel with new beautiful caption
+    try:
+        file_id = message.video.file_id if message.video else message.document.file_id
+        if message.video:
+            bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=beautiful_caption, parse_mode="Markdown")
+        else:
+            bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=beautiful_caption, parse_mode="Markdown")
+        
+        bot.reply_to(message, f"✅ *Saved Successfully to Database Channel!*\n\n{beautiful_caption}", parse_mode="Markdown")
+    except Exception as e:
+        bot.reply_to(message, f"❌ *Failed to save.*\nMake @Film4you1bot ADMIN in database channel -1004341107282\n\nError: {e}", parse_mode="Markdown")
+
+# --- USER: SEARCH AND GET MOVIE ---
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, "🎬 *Film4you Bot is Live!*\n\nSend any movie name to get details.\nAdmin can send video with caption to save.", parse_mode="Markdown")
+
+@bot.message_handler(func=lambda m: m.text and not m.text.startswith('/'))
+def search_handler(message):
+    query = message.text.strip()
+    info = get_tmdb_info(query)
+    if not info:
+        bot.send_message(message.chat.id, f"❌ No results for *{query}*", parse_mode="Markdown")
         return
 
     caption = (
-        f"🎬 *{data['title']} ({data['year']})* - {data['type']}\n"
-        f"⭐ *Rating:* {data['rating']}/10\n"
-        f"🎭 *Genres:* {data['genres']}\n"
-        f"⏱ *Length:* {data['runtime']}\n"
-        f"📅 *Release Date:* {data['release_date']}\n"
-        f"🌟 *Starcast:* {data['starcast']}\n\n"
-        f"📝 *Story:* {data['story'][:550]}\n\n"
-        f"✅ *Details Found!*"
+        f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()}\n"
+        f"⭐ *Rating:* {info['rating']}/10\n"
+        f"🎭 *Genres:* {info['genres']}\n"
+        f"⏱ *Length:* {info['runtime']}\n"
+        f"📅 *Release Date:* {info['release_date']}\n\n"
+        f"📝 *Story:* {info['story']}\n\n"
+        f"✅ *File Available in Database Channel*"
     )
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(query)}+trailer"),
-        InlineKeyboardButton("📍 Where to Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(query)}")
+        InlineKeyboardButton("📥 Download / Watch", url="https://t.me/c/4341107282"),
+        InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer")
     )
     markup.add(
-        InlineKeyboardButton("⭐ IMDb", url=f"https://www.imdb.com/find?q={quote_plus(query)}"),
-        InlineKeyboardButton("🎬 Google", url=f"https://www.google.com/search?q={quote_plus(query)}+movie")
+        InlineKeyboardButton("⭐ IMDb", url=f"https://www.imdb.com/find?q={quote_plus(info['title'])}"),
+        InlineKeyboardButton("📍 Where to Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}")
     )
 
     try:
-        if data['poster']:
-            bot.send_photo(message.chat.id, data['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
+        if info['poster']:
+            bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
         else:
             bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
-        print(f"Send Error: {e}")
+        print(e)
         bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
 
 if __name__ == "__main__":
@@ -160,7 +172,7 @@ if __name__ == "__main__":
         pass
     while True:
         try:
-            bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
+            bot.polling(none_stop=True, timeout=60)
         except Exception as e:
             print(f"Polling Error: {e}")
             time.sleep(5)
