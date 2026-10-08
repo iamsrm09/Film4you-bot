@@ -50,97 +50,157 @@ def get_tmdb(query):
         print("TMDB Error:", e)
         return None
 
-# --- SAVE WITH TMDB CAPTION + THUMBNAIL ---
-@bot.message_handler(content_types=['video', 'document'])
+# --- 1. SAVE VIDEO WITH TMDB DESCRIPTION + THUMBNAIL CHANGE ---
+@bot.message_handler(content_types=['video', 'document', 'video_note'])
 def save_handler(message):
+    print("Video received!")
     caption_input = message.caption or ""
     if not caption_input:
-        bot.reply_to(message, "❌ Please add caption! Example: `Rango`")
+        bot.reply_to(message, "❌ Please add caption!\nExample: `Rango` or `Money Heist S01`", parse_mode="Markdown")
         return
-    file_id = message.video.file_id if message.video else message.document.file_id
-    key = caption_input.lower().strip()
+    file_id = None
+    if message.video: file_id = message.video.file_id
+    elif message.document: file_id = message.document.file_id
+    if not file_id:
+        bot.reply_to(message, "❌ No file_id found")
+        return
 
+    # Save to local DB
     db = load_db()
+    key = caption_input.lower().strip()
     db[key] = file_id
     save_db(db)
+    print(f"Saved: {key} -> {file_id[:20]}")
 
+    # Fetch TMDB for beautiful caption + thumbnail
     bot.reply_to(message, f"🔍 Fetching TMDB for *{caption_input}*...", parse_mode="Markdown")
     info = get_tmdb(caption_input)
 
     if info:
         beautiful_caption = (
             f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()}\n"
-            f"⭐ {info['rating']}/10 | 🎭 {info['genres']} | ⏱ {info['runtime']}\n"
-            f"📅 {info['date']}\n\n"
-            f"📝 {info['story']}\n\n"
-            f"🔑 `{key}`\n"
+            f"⭐ *Rating:* {info['rating']}/10 | 🎭 {info['genres']}\n"
+            f"⏱ *{info['runtime']}* | 📅 {info['date']}\n\n"
+            f"📝 *Story:* {info['story']}\n\n"
+            f"🔑 Search Key: `{key}`\n"
             f"✅ @Film4you1bot"
         )
         poster_url = info['poster']
     else:
-        beautiful_caption = f"🎬 *{caption_input}*\n\n🔑 `{key}`\n✅ @Film4you1bot"
+        beautiful_caption = (
+            f"🎬 *{caption_input}*\n\n"
+            f"🔑 Search Key: `{key}`\n"
+            f"✅ @Film4you1bot"
+        )
         poster_url = None
 
+    # Save to Database Channel with new thumbnail + description
     try:
-        # Send with beautiful caption to Database Channel
+        # 1. Send Poster as thumbnail with beautiful caption
+        if poster_url:
+            bot.send_photo(DATABASE_CHANNEL_ID, poster_url, caption=beautiful_caption, parse_mode="Markdown")
+
+        # 2. Send actual file with beautiful caption
         if message.video:
             bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=beautiful_caption, parse_mode="Markdown")
         else:
             bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=beautiful_caption, parse_mode="Markdown")
 
-        # Also send poster separately for thumbnail preview
-        if poster_url:
-            bot.send_photo(DATABASE_CHANNEL_ID, poster_url, caption=beautiful_caption, parse_mode="Markdown")
-
-        bot.reply_to(message, f"✅ **Saved with TMDB Caption!**\nDatabase channel me ab TMDB wala caption chala gaya hai.\n\n{beautiful_caption}", parse_mode="Markdown")
+        bot.reply_to(message, f"✅ **Saved with TMDB Description + Thumbnail!**\n\n{beautiful_caption}", parse_mode="Markdown")
     except Exception as e:
-        bot.reply_to(message, f"⚠️ Error sending to channel: {e}\nMake bot ADMIN in {DATABASE_CHANNEL_ID}")
+        bot.reply_to(message, f"⚠️ Saved locally but failed to send to channel.\nMake bot ADMIN in channel -1004341107282\nError: {e}\nKey: `{key}`", parse_mode="Markdown")
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['start', 'help'])
 def start_handler(message):
-    bot.send_message(message.chat.id, "🎬 Send movie name to search.\nTo save: Send video with caption `Rango`", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "🎬 Send me movie name to search.\n\n**To Save Movie:** Just send video/document with caption as movie name.\nExample: `Rango` or `Money Heist S01`", parse_mode="Markdown")
 
+# --- 2. SEARCH WITH 5 BUTTONS - BIG BUTTON LOGIC ---
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
     query = message.text.strip()
+    if not query: return
     if len(query) < 2: return
-    db = load_db()
+    print(f"Searching: {query}")
     info = get_tmdb(query)
+    db = load_db()
+
     if not info:
+        caption = f"🎬 *{query}*\n\n✅ File check..."
         markup = InlineKeyboardMarkup(row_width=1)
         qlow = query.lower()
         found = qlow if qlow in db else next((k for k in db if qlow in k), None)
-        if found: markup.add(InlineKeyboardButton("📥 DOWNLOAD & WATCH", callback_data=f"get_{found}"))
-        else: markup.add(InlineKeyboardButton("📥 DOWNLOAD & WATCH", callback_data=f"nof_{qlow}"))
-        markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(query)}+trailer"), InlineKeyboardButton("📍 Where to Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(query)}"))
-        markup.row(InlineKeyboardButton("⭐ IMDb", url=f"https://www.imdb.com/find?q={quote_plus(query)}"), InlineKeyboardButton("🎬 Google", url=f"https://www.google.com/search?q={quote_plus(query)}"))
-        bot.send_message(message.chat.id, f"🎬 *{query}*", parse_mode="Markdown", reply_markup=markup)
+        if found:
+            markup.add(InlineKeyboardButton("📥 DOWNLOAD & WATCH", callback_data=f"get_{found}"))
+        else:
+            markup.add(InlineKeyboardButton("📥 DOWNLOAD & WATCH", callback_data=f"nof_{qlow}"))
+        markup.row(
+            InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(query)}+trailer"),
+            InlineKeyboardButton("📍 Where to Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(query)}")
+        )
+        markup.row(
+            InlineKeyboardButton("⭐ IMDb", url=f"https://www.imdb.com/find?q={quote_plus(query)}"),
+            InlineKeyboardButton("🎬 Google", url=f"https://www.google.com/search?q={quote_plus(query)}")
+        )
+        bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
         return
 
-    caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()}\n⭐ {info['rating']}/10 | 🎭 {info['genres']} | ⏱ {info['runtime']}\n\n📝 {info['story']}\n"
+    caption = (
+        f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()}\n"
+        f"⭐ {info['rating']}/10 | 🎭 {info['genres']} | ⏱ {info['runtime']}\n\n"
+        f"📝 {info['story']}\n"
+    )
+
     markup = InlineKeyboardMarkup(row_width=1)
+
     if info['type'] == 'movie':
         qlow = query.lower()
-        found = qlow if qlow in db else next((k for k in db if qlow in k or k in qlow), None)
-        if found: markup.add(InlineKeyboardButton("📥 DOWNLOAD & WATCH", callback_data=f"get_{found}"))
-        else: markup.add(InlineKeyboardButton("📥 DOWNLOAD & WATCH", callback_data=f"nof_{qlow}"))
+        found = None
+        if qlow in db: found = qlow
+        else:
+            for k in db:
+                if qlow in k or k in qlow:
+                    found = k
+                    break
+        if found:
+            markup.add(InlineKeyboardButton("📥 DOWNLOAD & WATCH", callback_data=f"get_{found}"))
+        else:
+            markup.add(InlineKeyboardButton("📥 DOWNLOAD & WATCH", callback_data=f"nof_{qlow}"))
     else:
         for s in info['seasons']:
             sn = s.get('season_number')
             if sn == 0: continue
-            fkey = next((k for k in db if f"s{sn:02d}" in k or f"season {sn}" in k), None)
-            if fkey: markup.add(InlineKeyboardButton(f"📥 SEASON {sn}", callback_data=f"get_{fkey}"))
-            else: markup.add(InlineKeyboardButton(f"📥 SEASON {sn}", callback_data=f"nof_{sn}"))
-    markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"), InlineKeyboardButton("📍 Where to Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}"))
-    markup.row(InlineKeyboardButton("⭐ IMDb", url=f"https://www.imdb.com/find?q={quote_plus(info['title'])}"), InlineKeyboardButton("🎬 Google", url=f"https://www.google.com/search?q={quote_plus(info['title'])}"))
+            possible = [f"{query.lower()} s{sn:02d}", f"{query.lower()} season {sn}", f"{info['title'].lower()} s{sn:02d}"]
+            fkey = None
+            for p in possible:
+                if p in db:
+                    fkey = p
+                    break
+            if fkey:
+                markup.add(InlineKeyboardButton(f"📥 SEASON {sn}", callback_data=f"get_{fkey}"))
+            else:
+                markup.add(InlineKeyboardButton(f"📥 SEASON {sn}", callback_data=f"nof_season_{sn}"))
+
+    markup.row(
+        InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"),
+        InlineKeyboardButton("📍 Where to Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}")
+    )
+    markup.row(
+        InlineKeyboardButton("⭐ IMDb", url=f"https://www.imdb.com/find?q={quote_plus(info['title'])}"),
+        InlineKeyboardButton("🎬 Google", url=f"https://www.google.com/search?q={quote_plus(info['title'])}")
+    )
+
     if info['poster']:
-        bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
+        try:
+            bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
+        except:
+            bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
     else:
         bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
 def cb(call):
     db = load_db()
+    print(f"Callback: {call.data}")
     if call.data.startswith('get_'):
         key = call.data[4:]
         fid = db.get(key)
@@ -149,19 +209,20 @@ def cb(call):
                 if key in k: fid=v; key=k; break
         if fid:
             bot.answer_callback_query(call.id, "Sending file...")
-            try: bot.send_document(call.message.chat.id, fid, caption=f"🎬 *{key.title()}*\n✅ @Film4you1bot", parse_mode="Markdown")
+            try: bot.send_document(call.message.chat.id, fid, caption=f"🎬 {key.title()}\n@Film4you1bot")
             except:
-                try: bot.send_video(call.message.chat.id, fid, caption=f"🎬 *{key.title()}*\n✅ @Film4you1bot", parse_mode="Markdown")
+                try: bot.send_video(call.message.chat.id, fid, caption=f"🎬 {key.title()}\n@Film4you1bot")
                 except Exception as e: bot.send_message(call.message.chat.id, f"Error: {e}")
         else:
-            bot.answer_callback_query(call.id, "File not found! Re-upload!", show_alert=True)
+            bot.answer_callback_query(call.id, "File not found in DB. Re-upload!", show_alert=True)
     else:
-        bot.answer_callback_query(call.id, "⚠️ File not added yet!", show_alert=True)
+        bot.answer_callback_query(call.id, "⚠️ File not added yet! Upload with caption like 'Rango' or 'Money Heist S01'", show_alert=True)
 
 if __name__ == "__main__":
     keep_alive()
     try: bot.remove_webhook(); time.sleep(1)
     except: pass
+    print("Bot started polling...")
     while True:
         try: bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
-        except Exception as e: print(e); time.sleep(5)
+        except Exception as e: print("Polling error:", e); time.sleep(5)
