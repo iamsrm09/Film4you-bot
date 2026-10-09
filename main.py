@@ -5,11 +5,28 @@ import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 
+# --- MONGO SETUP ---
+from pymongo import MongoClient
+MONGO_URL = os.environ.get('MONGO_URL')
+if MONGO_URL:
+    client = MongoClient(MONGO_URL)
+    mongo_db = client['film4you']
+    movies_col = mongo_db['movies']
+    caps_col = mongo_db['captions']
+    print("Mongo Connected!")
+else:
+    client = None
+    print("MONGO_URL not found! Using local file")
+
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is Live!"
-def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
-def keep_alive(): Thread(target=run_flask, daemon=True).start()
+def home():
+    return "Bot is Live! Mongo Connected!" if MONGO_URL else "Bot is Live! Local DB"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+def keep_alive():
+    Thread(target=run_flask, daemon=True).start()
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TMDB_KEY = os.environ.get('TMDB_API_KEY')
@@ -31,20 +48,72 @@ def is_duplicate(msg_id):
     if len(PROCESSED) > 200: PROCESSED.clear()
     return False
 
+# --- NEW DB FUNCTIONS (MONGO) ---
 def load_db():
+    if MONGO_URL:
+        try:
+            data = {}
+            for doc in movies_col.find():
+                data[doc['_id']] = doc.get('files', [])
+            return data
+        except Exception as e:
+            print(f"Mongo load_db error: {e}")
+            return {}
     if not os.path.exists(DB_FILE): return {}
     try:
         with open(DB_FILE,'r') as f: return json.load(f)
     except: return {}
-def save_db(data):
-    with open(DB_FILE,'w') as f: json.dump(data, f)
+
+def save_db_file_id(key, file_id):
+    if MONGO_URL:
+        try:
+            movies_col.update_one(
+                {"_id": key},
+                {"$addToSet": {"files": file_id}},
+                upsert=True
+            )
+            return
+        except Exception as e:
+            print(f"Mongo save error: {e}")
+    # fallback local
+    db = load_db()
+    if key not in db: db[key] = []
+    if file_id not in db[key]:
+        db[key].append(file_id)
+        with open(DB_FILE,'w') as f: json.dump(db, f)
+
 def load_caps():
+    if MONGO_URL:
+        try:
+            data = {}
+            for doc in caps_col.find():
+                data[doc['_id']] = doc.get('caption', '')
+            return data
+        except: return {}
     if not os.path.exists(CAP_FILE): return {}
     try:
         with open(CAP_FILE,'r') as f: return json.load(f)
     except: return {}
-def save_caps(data):
-    with open(CAP_FILE,'w') as f: json.dump(data, f, ensure_ascii=False)
+
+def save_caps_single(file_id, caption):
+    if MONGO_URL:
+        try:
+            caps_col.update_one(
+                {"_id": file_id},
+                {"$set": {"caption": caption}},
+                upsert=True
+            )
+            return
+        except Exception as e:
+            print(f"Mongo cap save error: {e}")
+    caps = load_caps()
+    caps[file_id] = caption
+    with open(CAP_FILE,'w') as f: json.dump(caps, f, ensure_ascii=False)
+
+def save_caps(data): # kept for compatibility but not used much
+    if not MONGO_URL:
+        with open(CAP_FILE,'w') as f: json.dump(data, f, ensure_ascii=False)
+
 def extract_year(text):
     m = re.search(r'\b(19|20)\d{2}\b', text)
     return m.group(0) if m else None
@@ -78,19 +147,14 @@ def get_tmdb(query, original_text=""):
         if year:
             for item in results:
                 r_date = item.get('release_date') or item.get('first_air_date') or ""
-                if year in r_date:
-                    best_item = item
-                    break
+                if year in r_date: best_item = item; break
         if not best_item:
             q_norm = normalize_search(q)
             for item in results:
                 title = (item.get('title') or item.get('name') or "").lower()
-                if normalize_search(title) == q_norm:
-                    best_item = item
-                    break
+                if normalize_search(title) == q_norm: best_item = item; break
         if not best_item: best_item = results[0]
-        mtype = best_item['media_type']
-        mid = best_item['id']
+        mtype = best_item['media_type']; mid = best_item['id']
         d = requests.get(f"https://api.themoviedb.org/3/{mtype}/{mid}?api_key={TMDB_KEY}", timeout=10).json()
         title = d.get('title') or d.get('name') or q
         poster_path = best_item.get('poster_path')
@@ -105,8 +169,7 @@ def get_tmdb(query, original_text=""):
         story = d.get('overview','')[:700] or "N/A"
         return {"title":title,"year":year_out,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype}
     except Exception as e:
-        print(f"TMDB Error {e}")
-        return None
+        print(f"TMDB Error {e}"); return None
 
 def build_search_markup(chat_id, page=0):
     data = SEARCH_CACHE.get(chat_id)
@@ -115,8 +178,7 @@ def build_search_markup(chat_id, page=0):
     db = load_db()
     total = len(matched_keys)
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE or 1
-    start = page * PAGE_SIZE
-    end = start + PAGE_SIZE
+    start = page * PAGE_SIZE; end = start + PAGE_SIZE
     page_keys = matched_keys[start:end]
     markup = InlineKeyboardMarkup(row_width=1)
     for key in page_keys:
@@ -124,37 +186,28 @@ def build_search_markup(chat_id, page=0):
         btn_name = key.title()[:35]
         markup.add(InlineKeyboardButton(f"📥 {btn_name} ({len(files)} Files)", callback_data=f"get_{key}_0"))
     nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"spage_{page-1}"))
+    if page > 0: nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"spage_{page-1}"))
     nav.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"spage_{page+1}"))
-    if total > PAGE_SIZE:
-        markup.row(*nav)
+    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"spage_{page+1}"))
+    if total > PAGE_SIZE: markup.row(*nav)
     if page == 0 and data.get("info"):
         info = data["info"]
-        markup.row(
-            InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"),
-            InlineKeyboardButton("📍 Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}")
-        )
+        markup.row( InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"), InlineKeyboardButton("📍 Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}") )
     return markup, total, total_pages
 
 def build_file_markup(chat_id, key, page=0):
     files = FILE_CACHE.get(chat_id, {}).get("files", [])
     total = len(files)
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE or 1
-    start = page * PAGE_SIZE
-    end = start + PAGE_SIZE
+    start = page * PAGE_SIZE; end = start + PAGE_SIZE
     page_files = files[start:end]
     markup = InlineKeyboardMarkup(row_width=1)
     for idx, fid in enumerate(page_files, start=start+1):
         markup.add(InlineKeyboardButton(f"📦 Part {idx} - Download", callback_data=f"send_{key}_{idx-1}"))
     nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"fpage_{page-1}"))
+    if page > 0: nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"fpage_{page-1}"))
     nav.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"fpage_{page+1}"))
+    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"fpage_{page+1}"))
     markup.row(*nav)
     markup.add(InlineKeyboardButton(f"📥 Send All {total} Files", callback_data=f"sendall_{key}"))
     return markup, total, total_pages
@@ -168,10 +221,8 @@ def channel_worker():
                     if thumb_path and os.path.exists(thumb_path):
                         with open(thumb_path, 'rb') as tf:
                             bot.send_video(DATABASE_CHANNEL_ID, file_id, thumb=tf, caption=db_caption)
-                    else:
-                        bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
-                else:
-                    bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
+                    else: bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
+                else: bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
             except Exception as e:
                 err = str(e)
                 if "429" in err:
@@ -193,18 +244,15 @@ def save_handler(message):
         if raw_caption: ALBUM_CACHE[media_group] = raw_caption
         elif media_group in ALBUM_CACHE: raw_caption = ALBUM_CACHE[media_group]
     if not raw_caption:
-        bot.reply_to(message, "❌ Caption me movie name likho! 🎬")
-        return
+        bot.reply_to(message, "❌ Caption me movie name likho! 🎬"); return
     file_id = message.video.file_id if message.video else message.document.file_id
     c_name = clean_name(raw_caption)
     if not c_name: c_name = raw_caption[:30].lower()
+
+    save_db_file_id(c_name, file_id)
+    save_caps_single(file_id, raw_caption)
+
     db = load_db()
-    if c_name not in db: db[c_name] = []
-    if file_id not in db[c_name]: db[c_name].append(file_id)
-    save_db(db)
-    caps = load_caps()
-    caps[file_id] = raw_caption
-    save_caps(caps)
     info = get_tmdb(raw_caption, raw_caption)
     thumb_path = None
     if info and info['poster']:
@@ -213,17 +261,22 @@ def save_handler(message):
             thumb_path = f"/tmp/{file_id}.jpg"
             with open(thumb_path, 'wb') as f: f.write(resp.content)
         except: thumb_path = None
-    if info:
-        db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10 | {info['genres']}\n\n{info['story'][:400]}"
-    else:
-        db_caption = raw_caption
+    if info: db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10 | {info['genres']}\n\n{info['story'][:400]}"
+    else: db_caption = raw_caption
     is_video = True if message.video else False
     CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
-    bot.reply_to(message, f"✅ Saved! Name: {c_name} | Files: {len(db[c_name])}")
+    bot.reply_to(message, f"✅ Saved to MongoDB! Name: {c_name} | Files: {len(db.get(c_name, []))}")
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['start','stats'])
 def start_handler(message):
     if is_duplicate(message.message_id): return
+    if message.text.startswith('/stats'):
+        db = load_db()
+        total_movies = len(db)
+        total_files = sum(len(v) for v in db.values())
+        mongo_status = "✅ Connected" if MONGO_URL else "❌ Local (MONGO_URL missing)"
+        bot.send_message(message.chat.id, f"📊 *Bot Stats*\n\nMongo: {mongo_status}\nTotal Movies: {total_movies}\nTotal Files: {total_files}\n\nLink: `{MONGO_URL[:30]}...` if connected", parse_mode="Markdown")
+        return
     name = message.from_user.first_name or "Friend"
     bot.send_message(message.chat.id, f"🎬✨ Film4you Bot Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇")
 
@@ -251,63 +304,46 @@ def search_handler(message):
         if not saved_stripped: continue
         norm_saved = normalize_search(saved_stripped)
         norm_q = normalize_search(clean_q)
-        if clean_q and (clean_q in saved_stripped or saved_stripped in clean_q):
-            matched_keys.append(saved_name)
-        elif norm_q and (norm_q in norm_saved or norm_saved in norm_q):
-            matched_keys.append(saved_name)
-        elif search_words and all(w in saved_stripped for w in search_words):
-            matched_keys.append(saved_name)
+        if clean_q and (clean_q in saved_stripped or saved_stripped in clean_q): matched_keys.append(saved_name)
+        elif norm_q and (norm_q in norm_saved or norm_saved in norm_q): matched_keys.append(saved_name)
+        elif search_words and all(w in saved_stripped for w in search_words): matched_keys.append(saved_name)
     matched_keys = list(set(matched_keys))
     matched_keys.sort(key=lambda x: abs(len(x) - len(clean_q)))
     SEARCH_CACHE[message.chat.id] = {"keys": matched_keys, "query": query, "info": info}
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
     if not info:
-        if matched_keys:
-            bot.send_message(message.chat.id, f"🎬 *{query}* 🔍\n\n{total} results - Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
-        else:
-            bot.send_message(message.chat.id, f"❌ *{query}* not found!", parse_mode="Markdown")
+        if matched_keys: bot.send_message(message.chat.id, f"🎬 *{query}* 🔍\n\n{total} results - Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
+        else: bot.send_message(message.chat.id, f"❌ *{query}* not found!", parse_mode="Markdown")
         return
     caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 | 🎭 {info['genres']} | ⏱️ {info['runtime']}\n📅 {info['date']}\n\n📝 {info['story']}\n\n🔍 {total} results - Page 1/{total_pages}"
     try:
-        if info['poster']:
-            bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
-        else:
-            bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
-    except:
-        bot.send_message(message.chat.id, caption, reply_markup=markup)
+        if info['poster']: bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup)
+        else: bot.send_message(message.chat.id, caption, parse_mode="Markdown", reply_markup=markup)
+    except: bot.send_message(message.chat.id, caption, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
 def cb(call):
     chat_id = call.message.chat.id
     db = load_db()
     caps = load_caps()
-
     if call.data == "noop":
-        bot.answer_callback_query(call.id)
-        return
-
+        bot.answer_callback_query(call.id); return
     if call.data.startswith("spage_"):
         page = int(call.data.split("_")[1])
         markup, total, total_pages = build_search_markup(chat_id, page)
         if markup:
             try: bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
             except: pass
-        bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}")
-        return
-
+        bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}"); return
     if call.data.startswith("fpage_"):
         page = int(call.data.split("_")[1])
         key = FILE_CACHE.get(chat_id, {}).get("key", "")
         markup, total, total_pages = build_file_markup(chat_id, key, page)
-        try:
-            bot.edit_message_text(f"🎬 *{key.title()}* - {total} Files\n\n📄 Page {page+1}/{total_pages}", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        try: bot.edit_message_text(f"🎬 *{key.title()}* - {total} Files\n\n📄 Page {page+1}/{total_pages}", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
         except: pass
-        bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}")
-        return
-
+        bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}"); return
     if call.data.startswith("send_"):
-        _, key, idx = call.data.split("_")
-        idx = int(idx)
+        _, key, idx = call.data.split("_"); idx = int(idx)
         files = FILE_CACHE.get(chat_id, {}).get("files", [])
         if idx < len(files):
             fid = files[idx]
@@ -316,9 +352,7 @@ def cb(call):
             except:
                 try: bot.send_video(chat_id, fid, caption=orig_cap)
                 except Exception as e: bot.send_message(chat_id, f"❌ Error: {e}")
-        bot.answer_callback_query(call.id)
-        return
-
+        bot.answer_callback_query(call.id); return
     if call.data.startswith("sendall_"):
         key = call.data.split("_",1)[1]
         files = FILE_CACHE.get(chat_id, {}).get("files", [])
@@ -331,7 +365,6 @@ def cb(call):
                 try: bot.send_video(chat_id, fid, caption=orig_cap)
                 except: pass
         return
-
     if call.data.startswith("get_"):
         parts = call.data.rsplit("_",1)
         key = parts[0][4:]
@@ -346,10 +379,8 @@ def cb(call):
             markup, total, total_pages = build_file_markup(chat_id, key, 0)
             bot.send_message(chat_id, f"🎬 *{key.title()}* - {total} Files\n\n📄 Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
             bot.answer_callback_query(call.id, f"{total} files - Page 1/{total_pages}")
-        else:
-            bot.answer_callback_query(call.id, "❌ File not found!", show_alert=True)
+        else: bot.answer_callback_query(call.id, "❌ File not found!", show_alert=True)
         return
-
     bot.answer_callback_query(call.id, "⚠️ Not found!")
 
 if __name__ == "__main__":
