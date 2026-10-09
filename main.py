@@ -9,12 +9,17 @@ from pymongo import MongoClient
 MONGO_URL = os.environ.get('MONGO_URL')
 TMDB_CACHE = {}
 RAM_DB = {}
+CLEAN_CACHE = {}
 
 if MONGO_URL:
-    client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
-    mongo_db = client['film4you']
-    movies_col = mongo_db['movies']
-    caps_col = mongo_db['captions']
+    try:
+        client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=10000, connectTimeoutMS=10000)
+        mongo_db = client['film4you']
+        movies_col = mongo_db['movies']
+        caps_col = mongo_db['captions']
+        print("Mongo Connected!")
+    except Exception as e:
+        print(f"Mongo Error: {e}")
 
 app = Flask('')
 @app.route('/')
@@ -39,21 +44,25 @@ PAGE_SIZE = 5
 def is_duplicate(msg_id):
     if msg_id in PROCESSED: return True
     PROCESSED.add(msg_id)
-    if len(PROCESSED) > 200: PROCESSED.clear()
+    if len(PROCESSED) > 300: PROCESSED.clear()
     return False
 
 def init_ram_cache():
-    global RAM_DB
+    global RAM_DB, CLEAN_CACHE
     if MONGO_URL:
         try:
+            print("Loading DB into RAM...")
             temp = {}
+            temp_clean = {}
             for doc in movies_col.find():
-                temp[doc['_id']] = doc.get('files', [])
+                key = doc['_id']
+                temp[key] = doc.get('files', [])
+                temp_clean[key] = clean_name(key)
             RAM_DB = temp
+            CLEAN_CACHE = temp_clean
             print(f"Loaded: {len(RAM_DB)} movies")
         except Exception as e:
-            print(f"Error: {e}")
-            RAM_DB = {}
+            print(f"RAM Error: {e}")
 
 def load_db():
     if RAM_DB: return RAM_DB
@@ -72,6 +81,7 @@ def load_db():
 def save_db_file_id(key, file_id):
     if key not in RAM_DB: RAM_DB[key] = []
     if file_id not in RAM_DB[key]: RAM_DB[key].append(file_id)
+    CLEAN_CACHE[key] = clean_name(key)
     if MONGO_URL:
         try: movies_col.update_one({"_id": key}, {"$addToSet": {"files": file_id}}, upsert=True)
         except: pass
@@ -115,9 +125,6 @@ def clean_name(text):
     text = re.sub(r'[^a-zA-Z0-9 ]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text.lower().strip()
-
-def normalize_search(text):
-    return text.lower().replace(" ", "").replace("-", "").strip()
 
 def get_tmdb(query, original_text=""):
     if not TMDB_KEY: return None
@@ -227,31 +234,45 @@ def save_handler(message):
     save_db_file_id(c_name, file_id)
     save_caps_single(file_id, raw_caption)
     db = RAM_DB if RAM_DB else load_db()
-    info = get_tmdb(raw_caption, raw_caption)
-    thumb_path = None
-    if info and info['poster']:
-        try:
-            resp = requests.get(info['poster'], timeout=10)
-            thumb_path = f"/tmp/{file_id}.jpg"
-            with open(thumb_path, 'wb') as f: f.write(resp.content)
-        except: thumb_path = None
-    if info: db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10"
-    else: db_caption = raw_caption
-    is_video = True if message.video else False
-    CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
     bot.reply_to(message, f"✅ Saved! Name: {c_name} | Files: {len(db.get(c_name, []))}")
+    def bg_post():
+        info = get_tmdb(raw_caption, raw_caption)
+        thumb_path = None
+        if info and info['poster']:
+            try:
+                resp = requests.get(info['poster'], timeout=10)
+                thumb_path = f"/tmp/{file_id}.jpg"
+                with open(thumb_path, 'wb') as f: f.write(resp.content)
+            except: thumb_path = None
+        if info: db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10"
+        else: db_caption = raw_caption
+        is_video = True if message.video else False
+        CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
+    Thread(target=bg_post, daemon=True).start()
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['start', 'srart', 'sart', 'strt', 'Start'])
 def start_handler(message):
     name = message.from_user.first_name or "Friend"
     bot.send_message(message.chat.id, f"🎬✨ Film4you Bot Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇")
 
-@bot.message_handler(commands=['stats'])
+@bot.message_handler(commands=['stats', 'Stats', 'STATS'])
 def stats_handler(message):
-    db = RAM_DB if RAM_DB else load_db()
-    total_movies = len(db)
-    total_files = sum(len(v) for v in db.values())
-    bot.send_message(message.chat.id, f"📊 *Bot Stats*\n\nTotal Movies: {total_movies}\nTotal Files: {total_files}\nStatus: ✅ Active", parse_mode="Markdown")
+    try:
+        if MONGO_URL and RAM_DB:
+            total_movies = len(RAM_DB)
+            total_files = sum(len(v) for v in RAM_DB.values())
+        elif MONGO_URL:
+            total_movies = movies_col.count_documents({})
+            total_files = 0
+            for doc in movies_col.find():
+                total_files += len(doc.get('files', []))
+        else:
+            db = load_db()
+            total_movies = len(db)
+            total_files = sum(len(v) for v in db.values())
+        bot.send_message(message.chat.id, f"📊 *Bot Stats*\n\nTotal Movies: {total_movies}\nTotal Files: {total_files}\nStatus: ✅ Active", parse_mode="Markdown")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Error: {e}")
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
@@ -259,27 +280,18 @@ def search_handler(message):
     if is_duplicate(message.message_id): return
     query = message.text.strip()
     if len(query) < 2: return
-    def strip_series(text):
-        text = re.sub(r'\b[sS]\d{1,2}\s*[eE]\d{1,2}\b', '', text)
-        text = re.sub(r'\b[sS]\d{1,2}\b', '', text)
-        text = re.sub(r'\bseason\s*\d+\b', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'\bepisode\s*\d+\b', '', text, flags=re.IGNORECASE)
-        return text
-    clean_q = clean_name(strip_series(query))
-    db = RAM_DB if RAM_DB else load_db()
+    if not RAM_DB:
+        init_ram_cache()
+        if not RAM_DB:
+            bot.send_message(message.chat.id, "⏳ Database connect ho rahi hai, thoda wait karo...")
+            return
+    clean_q = clean_name(query)
     matched_keys = []
-    search_words = [w for w in clean_q.split() if len(w) > 1]
-    for saved_name in db.keys():
-        if len(saved_name) < 2: continue
-        saved_stripped = clean_name(strip_series(saved_name))
-        if not saved_stripped: continue
-        norm_saved = normalize_search(saved_stripped)
-        norm_q = normalize_search(clean_q)
-        if clean_q and (clean_q in saved_stripped or saved_stripped in clean_q): matched_keys.append(saved_name)
-        elif norm_q and (norm_q in norm_saved or norm_saved in norm_q): matched_keys.append(saved_name)
-        elif search_words and all(w in saved_stripped for w in search_words): matched_keys.append(saved_name)
-    matched_keys = list(set(matched_keys))
-    matched_keys.sort(key=lambda x: abs(len(x) - len(clean_q)))
+    for original_key, cleaned_key in CLEAN_CACHE.items():
+        if clean_q in cleaned_key or cleaned_key in clean_q:
+            matched_keys.append(original_key)
+        if len(matched_keys) >= 30:
+            break
     SEARCH_CACHE[message.chat.id] = {"keys": matched_keys, "query": query, "info": None}
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
     if total == 0:
@@ -353,14 +365,14 @@ def cb(call):
         data = db.get(key)
         if not data:
             for k,v in db.items():
-                if key in k or k in key or normalize_search(key) == normalize_search(k):
+                if key in k or k in key:
                     data = v; key = k; break
         if data:
             files = data if isinstance(data, list) else [data]
             FILE_CACHE[chat_id] = {"key": key, "files": files}
             markup, total, total_pages = build_file_markup(chat_id, key, 0)
             bot.send_message(chat_id, f"🎬 *{key.title()}* - {total} Files\n\n📄 Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
-            bot.answer_callback_query(call.id, f"{total} files - Page 1/{total_pages}")
+            bot.answer_callback_query(call.id, f"{total} files")
         else: bot.answer_callback_query(call.id, "❌ File not found!", show_alert=True)
         return
 
