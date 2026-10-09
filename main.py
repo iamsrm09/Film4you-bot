@@ -23,7 +23,7 @@ if MONGO_URL:
 
 app = Flask('')
 @app.route('/')
-def home(): return "Bot Live ✅"
+def home(): return "Active ✅"
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 def keep_alive():
