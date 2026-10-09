@@ -5,9 +5,11 @@ import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 
-# --- MONGO SETUP ---
+# --- MONGO + FAST CACHE ---
 from pymongo import MongoClient
 MONGO_URL = os.environ.get('MONGO_URL')
+TMDB_CACHE = {}
+
 if MONGO_URL:
     client = MongoClient(MONGO_URL)
     mongo_db = client['film4you']
@@ -16,13 +18,12 @@ if MONGO_URL:
     print("Mongo Connected!")
 else:
     client = None
-    print("MONGO_URL not found! Using local file")
+    print("MONGO_URL missing!")
 
 app = Flask('')
 @app.route('/')
 def home():
-    return "Bot is Live! Mongo Connected!" if MONGO_URL else "Bot is Live! Local DB"
-
+    return "Bot Live - Mongo ✅ Fast ⚡" if MONGO_URL else "Bot Live - Local ❌"
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 def keep_alive():
@@ -48,7 +49,6 @@ def is_duplicate(msg_id):
     if len(PROCESSED) > 200: PROCESSED.clear()
     return False
 
-# --- NEW DB FUNCTIONS (MONGO) ---
 def load_db():
     if MONGO_URL:
         try:
@@ -56,9 +56,7 @@ def load_db():
             for doc in movies_col.find():
                 data[doc['_id']] = doc.get('files', [])
             return data
-        except Exception as e:
-            print(f"Mongo load_db error: {e}")
-            return {}
+        except: return {}
     if not os.path.exists(DB_FILE): return {}
     try:
         with open(DB_FILE,'r') as f: return json.load(f)
@@ -66,16 +64,8 @@ def load_db():
 
 def save_db_file_id(key, file_id):
     if MONGO_URL:
-        try:
-            movies_col.update_one(
-                {"_id": key},
-                {"$addToSet": {"files": file_id}},
-                upsert=True
-            )
-            return
-        except Exception as e:
-            print(f"Mongo save error: {e}")
-    # fallback local
+        movies_col.update_one({"_id": key}, {"$addToSet": {"files": file_id}}, upsert=True)
+        return
     db = load_db()
     if key not in db: db[key] = []
     if file_id not in db[key]:
@@ -87,7 +77,7 @@ def load_caps():
         try:
             data = {}
             for doc in caps_col.find():
-                data[doc['_id']] = doc.get('caption', '')
+                data[doc['_id']] = doc.get('caption','')
             return data
         except: return {}
     if not os.path.exists(CAP_FILE): return {}
@@ -97,20 +87,16 @@ def load_caps():
 
 def save_caps_single(file_id, caption):
     if MONGO_URL:
-        try:
-            caps_col.update_one(
-                {"_id": file_id},
-                {"$set": {"caption": caption}},
-                upsert=True
-            )
-            return
-        except Exception as e:
-            print(f"Mongo cap save error: {e}")
+        caps_col.update_one({"_id": file_id}, {"$set": {"caption": caption}}, upsert=True)
+        return
     caps = load_caps()
     caps[file_id] = caption
     with open(CAP_FILE,'w') as f: json.dump(caps, f, ensure_ascii=False)
 
-def save_caps(data): # kept for compatibility but not used much
+def save_db(data):
+    if not MONGO_URL:
+        with open(DB_FILE,'w') as f: json.dump(data, f)
+def save_caps(data):
     if not MONGO_URL:
         with open(CAP_FILE,'w') as f: json.dump(data, f, ensure_ascii=False)
 
@@ -135,27 +121,24 @@ def normalize_search(text):
 
 def get_tmdb(query, original_text=""):
     if not TMDB_KEY: return None
+    cache_key = clean_name(query)[:40]
+    if cache_key in TMDB_CACHE:
+        return TMDB_CACHE[cache_key]
     q = clean_name(query)
     year = extract_year(original_text or query)
     if len(q) < 2: q = query
     try:
         url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={quote_plus(q)}"
-        r = requests.get(url, timeout=10).json()
+        r = requests.get(url, timeout=5).json()
         if not r.get('results'): return None
-        results = [x for x in r['results'] if x.get('media_type') in ['movie','tv']][:10]
-        best_item = None
+        results = [x for x in r['results'] if x.get('media_type') in ['movie','tv']][:3]
+        best_item = results[0]
         if year:
             for item in results:
                 r_date = item.get('release_date') or item.get('first_air_date') or ""
                 if year in r_date: best_item = item; break
-        if not best_item:
-            q_norm = normalize_search(q)
-            for item in results:
-                title = (item.get('title') or item.get('name') or "").lower()
-                if normalize_search(title) == q_norm: best_item = item; break
-        if not best_item: best_item = results[0]
         mtype = best_item['media_type']; mid = best_item['id']
-        d = requests.get(f"https://api.themoviedb.org/3/{mtype}/{mid}?api_key={TMDB_KEY}", timeout=10).json()
+        d = requests.get(f"https://api.themoviedb.org/3/{mtype}/{mid}?api_key={TMDB_KEY}", timeout=5).json()
         title = d.get('title') or d.get('name') or q
         poster_path = best_item.get('poster_path')
         poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
@@ -166,8 +149,11 @@ def get_tmdb(query, original_text=""):
         year_out = date[:4] if len(date)>=4 else "N/A"
         rt = d.get('runtime',0)
         runtime = f"{rt//60}H {rt%60}M" if mtype=='movie' and rt else f"{d.get('number_of_seasons',1)} Seasons" if mtype=='tv' else "N/A"
-        story = d.get('overview','')[:700] or "N/A"
-        return {"title":title,"year":year_out,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype}
+        story = d.get('overview','')[:500] or "N/A"
+        res = {"title":title,"year":year_out,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype}
+        TMDB_CACHE[cache_key] = res
+        if len(TMDB_CACHE) > 200: TMDB_CACHE.clear()
+        return res
     except Exception as e:
         print(f"TMDB Error {e}"); return None
 
@@ -248,16 +234,14 @@ def save_handler(message):
     file_id = message.video.file_id if message.video else message.document.file_id
     c_name = clean_name(raw_caption)
     if not c_name: c_name = raw_caption[:30].lower()
-
     save_db_file_id(c_name, file_id)
     save_caps_single(file_id, raw_caption)
-
     db = load_db()
     info = get_tmdb(raw_caption, raw_caption)
     thumb_path = None
     if info and info['poster']:
         try:
-            resp = requests.get(info['poster'], timeout=15)
+            resp = requests.get(info['poster'], timeout=10)
             thumb_path = f"/tmp/{file_id}.jpg"
             with open(thumb_path, 'wb') as f: f.write(resp.content)
         except: thumb_path = None
@@ -267,21 +251,23 @@ def save_handler(message):
     CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
     bot.reply_to(message, f"✅ Saved to MongoDB! Name: {c_name} | Files: {len(db.get(c_name, []))}")
 
-@bot.message_handler(commands=['start','stats'])
+@bot.message_handler(commands=['start'])
 def start_handler(message):
     if is_duplicate(message.message_id): return
-    if message.text.startswith('/stats'):
-        db = load_db()
-        total_movies = len(db)
-        total_files = sum(len(v) for v in db.values())
-        mongo_status = "✅ Connected" if MONGO_URL else "❌ Local (MONGO_URL missing)"
-        bot.send_message(message.chat.id, f"📊 *Bot Stats*\n\nMongo: {mongo_status}\nTotal Movies: {total_movies}\nTotal Files: {total_files}\n\nLink: `{MONGO_URL[:30]}...` if connected", parse_mode="Markdown")
-        return
     name = message.from_user.first_name or "Friend"
     bot.send_message(message.chat.id, f"🎬✨ Film4you Bot Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇")
 
+@bot.message_handler(commands=['stats'])
+def stats_handler(message):
+    db = load_db()
+    total_movies = len(db)
+    total_files = sum(len(v) for v in db.values())
+    mongo_status = "✅ Connected" if MONGO_URL else "❌ Local (MONGO_URL missing)"
+    bot.send_message(message.chat.id, f"📊 *Bot Stats*\n\nMongo: {mongo_status}\nTotal Movies: {total_movies}\nTotal Files: {total_files}", parse_mode="Markdown")
+
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
+    if message.text.startswith('/'): return
     if is_duplicate(message.message_id): return
     query = message.text.strip()
     if len(query) < 2: return
