@@ -1,4 +1,4 @@
-import os, time, requests, json, re, queue
+import os, time, requests, json, re, queue, sys
 from threading import Thread
 from flask import Flask
 import telebot
@@ -6,14 +6,16 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 from pymongo import MongoClient
 
-print("Starting V5 OLD START...", flush=True)
+print("Starting V5 FULL FIX...", flush=True)
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
     AI_AVAILABLE = True
-except:
+    print("AI Lib Loaded", flush=True)
+except Exception as e:
     AI_AVAILABLE = False
+    print(f"AI Lib Error: {e}", flush=True)
 
 MONGO_URL = os.environ.get('MONGO_URL')
 TMDB_CACHE = {}
@@ -26,7 +28,7 @@ AI_KEYS_LIST = []
 app = Flask('')
 @app.route('/')
 def home():
-    return "Active V5 OLD START"
+    return "Active ✅ V5 FULL"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -86,7 +88,7 @@ def build_ai_index():
         corpus = [CLEAN_CACHE[k] for k in AI_KEYS_LIST]
         AI_VECTORIZER = TfidfVectorizer(analyzer='char_wb', ngram_range=(3,5))
         AI_MATRIX = AI_VECTORIZER.fit_transform(corpus)
-        print(f"AI Built: {len(AI_KEYS_LIST)}", flush=True)
+        print(f"AI Index Built CHAR: {len(AI_KEYS_LIST)}", flush=True)
     except Exception as e:
         print(f"AI Build Error: {e}", flush=True)
 
@@ -168,7 +170,7 @@ def save_db_file_id(key, file_id):
     if MONGO_URL:
         try:
             movies_col.update_one({"_id": key}, {"$addToSet": {"files": file_id}}, upsert=True)
-        except:
+        except Exception:
             pass
 
 def load_caps():
@@ -178,7 +180,7 @@ def load_caps():
             for doc in caps_col.find():
                 data[doc['_id']] = doc.get('caption','')
             return data
-        except:
+        except Exception:
             return {}
     return {}
 
@@ -186,7 +188,7 @@ def save_caps_single(file_id, caption):
     if MONGO_URL:
         try:
             caps_col.update_one({"_id": file_id}, {"$set": {"caption": caption}}, upsert=True)
-        except:
+        except Exception:
             pass
 
 def get_tmdb(query, original_text=""):
@@ -224,7 +226,7 @@ def get_tmdb(query, original_text=""):
         res = {"title":title,"year":year_out,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype}
         TMDB_CACHE[cache_key] = res
         return res
-    except:
+    except Exception:
         return None
 
 def build_search_markup(chat_id, page=0):
@@ -254,7 +256,10 @@ def build_search_markup(chat_id, page=0):
         markup.row(*nav)
     if page == 0 and data.get("info") and total > 0:
         info = data["info"]
-        markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"), InlineKeyboardButton("📍 Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}"))
+        markup.row(
+            InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"),
+            InlineKeyboardButton("📍 Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}")
+        )
     return markup, total, total_pages
 
 def build_file_markup(chat_id, key, page=0):
@@ -289,18 +294,17 @@ def channel_worker():
                         bot.send_video(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
                 else:
                     bot.send_document(DATABASE_CHANNEL_ID, file_id, caption=db_caption)
-            except Exception as e:
-                if "429" in str(e):
+            except Exception as ex:
+                if "429" in str(ex):
                     time.sleep(35)
                     CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
             time.sleep(3.5)
             CHANNEL_QUEUE.task_done()
-        except:
+        except Exception:
             time.sleep(3)
 
 Thread(target=channel_worker, daemon=True).start()
 
-# --- PURANA WELCOME SYSTEM ---
 @bot.message_handler(content_types=['new_chat_members'])
 def welcome_handler(message):
     for new_user in message.new_chat_members:
@@ -339,11 +343,11 @@ def save_handler(message):
     db = RAM_DB if RAM_DB else load_db()
     bot.reply_to(message, f"✅ Saved! {c_name} | Files: {len(db.get(c_name, []))}")
 
-# --- PURANA START SYSTEM ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     name = message.from_user.first_name or "Friend"
-    bot.send_message(message.chat.id, f"🎬✨ Film4you Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇\n🤖 AI Enabled!", parse_mode="Markdown")
+    text = f"🎬✨ Film4you Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇\n🤖 AI Enabled!"
+    bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['stats'])
 def stats_handler(message):
@@ -398,7 +402,6 @@ def search_handler(message):
                 ai_used = True
     SEARCH_CACHE[message.chat.id] = {"keys": matched_keys, "query": query, "info": None}
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
-    # --- PURANA NOT FOUND SYSTEM ---
     if total == 0:
         sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*", parse_mode="Markdown")
     else:
@@ -422,21 +425,27 @@ def search_handler(message):
                         bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup2)
                     else:
                         bot.edit_message_text(caption, message.chat.id, sent_msg.message_id, parse_mode="Markdown", reply_markup=markup2)
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
+
     Thread(target=fetch_tmdb_and_edit, daemon=True).start()
 
 @bot.callback_query_handler(func=lambda call: True)
-def cb(call):
+def cb_handler(call):
     chat_id = call.message.chat.id
     db = RAM_DB if RAM_DB else load_db()
     caps = load_caps()
     data = call.data
+
     if data == "noop":
-        bot.answer_callback_query(call.id)
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
         return
+
     if data.startswith("sp_"):
         try:
             page = int(data.split("_")[1])
@@ -444,12 +453,19 @@ def cb(call):
             if markup:
                 try:
                     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
-                except:
+                except Exception:
                     pass
-            bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}")
-        except:
-            bot.answer_callback_query(call.id)
+            try:
+                bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}")
+            except Exception:
+                pass
+        except Exception:
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
         return
+
     if data.startswith("fp_"):
         try:
             page = int(data.split("_")[1])
@@ -457,12 +473,19 @@ def cb(call):
             markup, total, total_pages = build_file_markup(chat_id, key, page)
             try:
                 bot.edit_message_text(f"🎬 *{key.title()}* - {total} Files\n\n📄 Page {page+1}/{total_pages}", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-            except:
+            except Exception:
                 pass
-            bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}")
-        except:
-            bot.answer_callback_query(call.id)
+            try:
+                bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}")
+            except Exception:
+                pass
+        except Exception:
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
         return
+
     if data.startswith("g_"):
         try:
             idx = int(data.split("_")[1])
@@ -481,22 +504,13 @@ def cb(call):
             bot.answer_callback_query(call.id, f"{total} files")
         except Exception as e:
             print(f"get error {e}", flush=True)
-            bot.answer_callback_query(call.id, "Error", show_alert=True)
+            try:
+                bot.answer_callback_query(call.id, "Error", show_alert=True)
+            except Exception:
+                pass
         return
+
     if data.startswith("s_"):
         try:
             idx = int(data.split("_")[1])
-            cache = FILE_CACHE.get(chat_id, {})
-            files = cache.get("files", [])
-            key = cache.get("key", "")
-            if idx < len(files):
-                fid = files[idx]
-                cap_text = caps.get(fid, key.title())
-                try:
-                    bot.send_document(chat_id, fid, caption=cap_text)
-                except:
-                    try:
-                        bot.send_video(chat_id, fid, caption=cap_text)
-                    except Exception as e:
-                        bot.send_message(chat_id, f"❌ Error: {e}")
-            bot.answer_callback_quer
+ 
