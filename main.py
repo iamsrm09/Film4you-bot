@@ -6,7 +6,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 from pymongo import MongoClient
 
-print("Starting V-FINAL...", flush=True)
+print("Starting V-FINAL3 TYPO FIX...", flush=True)
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -27,7 +27,7 @@ AI_KEYS_LIST = []
 
 app = Flask('')
 @app.route('/')
-def home(): return "Active ✅ V-FINAL"
+def home(): return "Active ✅ V-FINAL3"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -81,9 +81,10 @@ def build_ai_index():
     try:
         AI_KEYS_LIST = list(CLEAN_CACHE.keys())
         corpus = [CLEAN_CACHE[k] for k in AI_KEYS_LIST]
-        AI_VECTORIZER = TfidfVectorizer(stop_words='english')
+        # CHAR N-GRAM = typo + spiderman/spider-man fix
+        AI_VECTORIZER = TfidfVectorizer(analyzer='char_wb', ngram_range=(3,5))
         AI_MATRIX = AI_VECTORIZER.fit_transform(corpus)
-        print(f"AI Index Built: {len(AI_KEYS_LIST)}", flush=True)
+        print(f"AI Index Built CHAR: {len(AI_KEYS_LIST)}", flush=True)
     except Exception as e:
         print(f"AI Build Error: {e}", flush=True)
 
@@ -113,10 +114,10 @@ def init_ram_cache():
         except Exception as e:
             print(f"RAM Error: {e}", flush=True)
 
-def ai_smart_search(query, top_k=5):
+def ai_smart_search(query, top_k=10):
     if not query or len(query) < 2: return []
     q = query.lower().strip()
-    for w in ["wali", "wala", "wale", "movie", "film"]:
+    for w in ["wali", "wala", "wale", "movie", "film", "bhejo"]:
         q = q.replace(w, " ")
     q = re.sub(r'\s+', ' ', q).strip()
     if len(q) < 3: return []
@@ -127,17 +128,17 @@ def ai_smart_search(query, top_k=5):
             ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
             results = []
             for idx, score in ranked:
-                if score >= 0.35:
+                if score >= 0.25: # char model pe 0.25 enough hai
                     results.append(AI_KEYS_LIST[idx])
                 if len(results) >= top_k: break
-            print(f"AI '{query}' -> top score {ranked[0][1] if ranked else 0:.3f} -> {len(results)} results", flush=True)
+            print(f"AI '{query}' -> top {ranked[0][1] if ranked else 0:.3f} -> {len(results)} results", flush=True)
             return results
         except Exception as e:
             print(f"AI Error {e}", flush=True)
     import difflib
     clean_q = clean_name(q)
     all_cleaned = list(CLEAN_CACHE.values())
-    close = difflib.get_close_matches(clean_q, all_cleaned, n=top_k, cutoff=0.65)
+    close = difflib.get_close_matches(clean_q, all_cleaned, n=top_k, cutoff=0.5)
     res_keys = []
     for c in close:
         for orig, cl in CLEAN_CACHE.items():
@@ -200,6 +201,7 @@ def get_tmdb(query, original_text=""):
         TMDB_CACHE[cache_key] = res
         return res
     except: return None
+
 def build_search_markup(chat_id, page=0):
     data = SEARCH_CACHE.get(chat_id)
     if not data: return None,0,0
@@ -210,35 +212,37 @@ def build_search_markup(chat_id, page=0):
     start = page * PAGE_SIZE; end = start + PAGE_SIZE
     page_keys = matched_keys[start:end]
     markup = InlineKeyboardMarkup(row_width=1)
-    for key in page_keys:
+    for i, key in enumerate(page_keys):
+        real_idx = start + i
         files = db.get(key, [])
-        btn_name = key.title()[:35]
-        markup.add(InlineKeyboardButton(f"📥 {btn_name} ({len(files)} Files)", callback_data=f"get_{key}_0"))
+        btn_name = key.title()[:30]
+        markup.add(InlineKeyboardButton(f"📥 {btn_name} ({len(files)})", callback_data=f"g_{real_idx}"))
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"spage_{page-1}"))
+    if page > 0: nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"sp_{page-1}"))
     nav.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"spage_{page+1}"))
+    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"sp_{page+1}"))
     if total > PAGE_SIZE: markup.row(*nav)
     if page == 0 and data.get("info") and total > 0:
         info = data["info"]
         markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"), InlineKeyboardButton("📍 Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}"))
     return markup, total, total_pages
+
 def build_file_markup(chat_id, key, page=0):
     files = FILE_CACHE.get(chat_id, {}).get("files", [])
     total = len(files)
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE or 1
     start = page * PAGE_SIZE; end = start + PAGE_SIZE
-    page_files = files[start:end]
     markup = InlineKeyboardMarkup(row_width=1)
-    for idx, fid in enumerate(page_files, start=start+1):
-        markup.add(InlineKeyboardButton(f"📦 Part {idx} - Download", callback_data=f"send_{key}_{idx-1}"))
+    for idx in range(start, min(end, total)):
+        markup.add(InlineKeyboardButton(f"📦 Part {idx+1} - Download", callback_data=f"s_{idx}"))
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"fpage_{page-1}"))
+    if page > 0: nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"fp_{page-1}"))
     nav.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"fpage_{page+1}"))
+    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"fp_{page+1}"))
     markup.row(*nav)
-    markup.add(InlineKeyboardButton(f"📥 Send All {total} Files", callback_data=f"sendall_{key}"))
+    markup.add(InlineKeyboardButton(f"📥 Send All {total} Files", callback_data="sa"))
     return markup, total, total_pages
+
 def channel_worker():
     while True:
         try:
@@ -260,6 +264,7 @@ def channel_worker():
             CHANNEL_QUEUE.task_done()
         except: time.sleep(3)
 Thread(target=channel_worker, daemon=True).start()
+
 @bot.message_handler(content_types=['new_chat_members'])
 def welcome_handler(message):
     for new_user in message.new_chat_members:
@@ -272,6 +277,7 @@ def welcome_handler(message):
             bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown")
         except Exception as e:
             print(f"Welcome Error: {e}", flush=True)
+
 @bot.message_handler(content_types=['video', 'document'])
 def save_handler(message):
     if is_duplicate(message.message_id): return
@@ -290,10 +296,12 @@ def save_handler(message):
     save_caps_single(file_id, raw_caption)
     db = RAM_DB if RAM_DB else load_db()
     bot.reply_to(message, f"✅ Saved! {c_name} | Files: {len(db.get(c_name, []))}")
+
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     name = message.from_user.first_name or "Friend"
     bot.send_message(message.chat.id, f"🎬✨ Film4you Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇\n🤖 AI Enabled!", parse_mode="Markdown")
+
 @bot.message_handler(commands=['stats'])
 def stats_handler(message):
     try:
@@ -302,6 +310,7 @@ def stats_handler(message):
         bot.send_message(message.chat.id, f"📊 *Stats*\n\nMovies: {total_movies}\nFiles: {total_files}\nAI: {len(AI_KEYS_LIST)}\nStatus: ✅ Active", parse_mode="Markdown")
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ {e}")
+
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
     if message.text.startswith('/'): return
@@ -313,23 +322,37 @@ def search_handler(message):
         return
     clean_q = clean_name(query)
     if not clean_q or len(clean_q) < 2: clean_q = query.lower().strip()
+
     matched_keys = []
+    # Step 1: Direct contains search
     for original_key, cleaned_key in CLEAN_CACHE.items():
         if not cleaned_key or len(cleaned_key) < 3: continue
         if clean_q == cleaned_key: matched_keys.append(original_key)
         elif clean_q in cleaned_key: matched_keys.append(original_key)
         elif len(clean_q) >= 4 and cleaned_key in clean_q: matched_keys.append(original_key)
         if len(matched_keys) >= 30: break
+
     ai_used = False
+    # Step 2: AI char search - handles spiderman/spider-man, typo
     if not matched_keys:
-        ai_results = ai_smart_search(query, top_k=5)
+        ai_results = ai_smart_search(query, top_k=10)
         if ai_results:
             matched_keys = ai_results
             ai_used = True
+        else:
+            # Step 3: Last try - split words
+            for original_key, cleaned_key in CLEAN_CACHE.items():
+                if any(word in cleaned_key for word in clean_q.split() if len(word)>=4):
+                    if original_key not in matched_keys:
+                        matched_keys.append(original_key)
+                if len(matched_keys) >= 10: break
+            if matched_keys:
+                ai_used = True
+
     SEARCH_CACHE[message.chat.id] = {"keys": matched_keys, "query": query, "info": None}
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
     if total == 0:
-        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*", parse_mode="Markdown")
+        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*\n\nTry: `spider man`, `avengers`", parse_mode="Markdown")
     else:
         label = "🤖 AI Search" if ai_used else "🎬 Search"
         sent_msg = bot.send_message(message.chat.id, f"{label} - *{query}* 🔍\n\n{total} results - Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
@@ -337,7 +360,6 @@ def search_handler(message):
         try:
             info = get_tmdb(query, query)
             if not info: return
-            # Only edit if we have results
             if SEARCH_CACHE[message.chat.id]["keys"]:
                 SEARCH_CACHE[message.chat.id]["info"] = info
                 markup2, total2, total_pages2 = build_search_markup(message.chat.id, 0)
@@ -352,75 +374,74 @@ def search_handler(message):
                 except: pass
         except: pass
     Thread(target=fetch_tmdb_and_edit, daemon=True).start()
+
 @bot.callback_query_handler(func=lambda call: True)
 def cb(call):
     chat_id = call.message.chat.id
     db = RAM_DB if RAM_DB else load_db()
     caps = load_caps()
-    if call.data == "noop":
+    data = call.data
+    if data == "noop":
         bot.answer_callback_query(call.id); return
-    if call.data.startswith("spage_"):
-        page = int(call.data.split("_")[1])
-        markup, total, total_pages = build_search_markup(chat_id, page)
-        if markup:
-            try: bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
-            except: pass
-        bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}"); return
-    if call.data.startswith("fpage_"):
-        page = int(call.data.split("_")[1])
-        key = FILE_CACHE.get(chat_id, {}).get("key", "")
-        markup, total, total_pages = build_file_markup(chat_id, key, page)
-        try: bot.edit_message_text(f"🎬 *{key.title()}* - {total} Files\n\n📄 Page {page+1}/{total_pages}", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-        except: pass
-        bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}"); return
-    if call.data.startswith("send_"):
-        parts = call.data.split("_"); key = "_".join(parts[1:-1]); idx = int(parts[-1])
-        files = FILE_CACHE.get(chat_id, {}).get("files", [])
-        if idx < len(files):
-            fid = files[idx]
-            orig_cap = caps.get(fid, f"🎬 {key.title()} Part {idx+1}")
-            try: bot.send_document(chat_id, fid, caption=orig_cap)
-            except:
-                try: bot.send_video(chat_id, fid, caption=orig_cap)
-                except Exception as e: bot.send_message(chat_id, f"❌ Error: {e}")
-        bot.answer_callback_query(call.id); return
-    if call.data.startswith("sendall_"):
-        key = call.data.split("_",1)[1]
-        files = FILE_CACHE.get(chat_id, {}).get("files", [])
-        bot.answer_callback_query(call.id, f"Sending {len(files)} files...")
-        for fid in files:
-            orig_cap = caps.get(fid, f"🎬 {key.title()} ✨")
-            time.sleep(0.8)
-            try: bot.send_document(chat_id, fid, caption=orig_cap)
-            except:
-                try: bot.send_video(chat_id, fid, caption=orig_cap)
+    if data.startswith("sp_"):
+        try:
+            page = int(data.split("_")[1])
+            markup, total, total_pages = build_search_markup(chat_id, page)
+            if markup:
+                try: bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
                 except: pass
+            bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}")
+        except: bot.answer_callback_query(call.id)
         return
-    if call.data.startswith("get_"):
-        parts = call.data.rsplit("_",1); key = parts[0][4:]
-        data = db.get(key)
-        if not data:
-            for k,v in db.items():
-                if key in k or k in key: data = v; key = k; break
-        if data:
-            files = data if isinstance(data, list) else [data]
-            FILE_CACHE[chat_id] = {"key": key, "files": files}
+    if data.startswith("fp_"):
+        try:
+            page = int(data.split("_")[1])
+            key = FILE_CACHE.get(chat_id, {}).get("key", "")
+            markup, total, total_pages = build_file_markup(chat_id, key, page)
+            try: bot.edit_message_text(f"🎬 *{key.title()}* - {total} Files\n\n📄 Page {page+1}/{total_pages}", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+            except: pass
+            bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}")
+        except: bot.answer_callback_query(call.id)
+        return
+    if data.startswith("g_"):
+        try:
+            idx = int(data.split("_")[1])
+            keys = SEARCH_CACHE.get(chat_id, {}).get("keys", [])
+            if idx >= len(keys):
+                bot.answer_callback_query(call.id, "❌ Not found", show_alert=True)
+                return
+            key = keys[idx]
+            file_list = db.get(key, [])
+            if not file_list:
+                bot.answer_callback_query(call.id, "❌ File not found", show_alert=True)
+                return
+            FILE_CACHE[chat_id] = {"key": key, "files": file_list}
             markup, total, total_pages = build_file_markup(chat_id, key, 0)
             bot.send_message(chat_id, f"🎬 *{key.title()}* - {total} Files\n\n📄 Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
             bot.answer_callback_query(call.id, f"{total} files")
-        else:
-            bot.answer_callback_query(call.id, "❌ File not found!", show_alert=True)
+        except Exception as e:
+            print(f"get error {e}", flush=True)
+            bot.answer_callback_query(call.id, "Error", show_alert=True)
         return
-print("Loading cache in background...", flush=True)
-Thread(target=init_ram_cache, daemon=True).start()
-print("Bot polling started...", flush=True)
-try:
-    bot.remove_webhook()
-    time.sleep(1)
-except: pass
-while True:
-    try:
-        bot.infinity_polling(timeout=60, long_polling_timeout=60)
-    except Exception as e:
-        print(f"Polling Error: {e}", flush=True)
-        time.sleep(5)
+    if data.startswith("s_"):
+        try:
+            idx = int(data.split("_")[1])
+            cache = FILE_CACHE.get(chat_id, {})
+            files = cache.get("files", [])
+            key = cache.get("key", "")
+            if idx < len(files):
+                fid = files[idx]
+                orig_cap = caps.get(fid, f"🎬 {key.title()} Part {idx+1}")
+                try: bot.send_document(chat_id, fid, caption=orig_cap)
+                except:
+                    try: bot.send_video(chat_id, fid, caption=orig_cap)
+                    except Exception as e: bot.send_message(chat_id, f"❌ Error: {e}")
+            bot.answer_callback_query(call.id)
+        except: bot.answer_callback_query(call.id)
+        return
+    if data == "sa":
+        try:
+            cache = FILE_CACHE.get(chat_id, {})
+            files = cache.get("files", [])
+            key = cache.get("key", "")
+            bot.answer_callback_query(call.id, f"Sending {len(fil
