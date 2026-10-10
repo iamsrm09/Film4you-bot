@@ -6,24 +6,21 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 from pymongo import MongoClient
 
-# --- AI IMPORTS (Free, no API key) ---
+# --- AI IMPORTS ---
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
     AI_AVAILABLE = True
 except:
     AI_AVAILABLE = False
-    print("AI lib not found, using fuzzy fallback")
 
 MONGO_URL = os.environ.get('MONGO_URL')
 TMDB_CACHE = {}
 RAM_DB = {}
 CLEAN_CACHE = {}
-
-# AI Engine Global
 AI_VECTORIZER = None
 AI_MATRIX = None
-AI_KEYS_LIST = [] # original keys
+AI_KEYS_LIST = []
 
 if MONGO_URL:
     try:
@@ -112,29 +109,58 @@ def build_ai_index():
         print(f"AI Build Error: {e}")
 
 def ai_smart_search(query, top_k=10):
-    """Return list of original_keys that match via AI"""
     if not query or len(query) < 2:
         return []
-    if AI_AVAILABLE and AI_VECTORIZER is not None:
+    q_lower = query.lower()
+    expanded_query = q_lower
+    genre_map = {
+        "bhoot": "horror scary ghost conjuring bhoot",
+        "darawni": "horror scary",
+        "darawani": "horror scary",
+        "horror": "horror scary ghost",
+        "pyar": "love romance",
+        "mohabbat": "love romance",
+        "romantic": "love romance",
+        "comedy": "comedy funny",
+        "hasane": "comedy funny",
+        "action": "action fight",
+        "ladai": "action fight",
+        "adventure": "adventure",
+        "sci": "science fiction",
+        "jadu": "magic fantasy",
+        "wala": "",
+        "wali": "",
+        "movie": "",
+    }
+    for hindi, eng in genre_map.items():
+        if hindi in q_lower:
+            expanded_query += " " + eng
+
+    if AI_AVAILABLE and AI_VECTORIZER is not None and AI_MATRIX is not None:
         try:
-            q_vec = AI_VECTORIZER.transform([clean_name(query)])
+            q_vec = AI_VECTORIZER.transform([clean_name(expanded_query)])
             scores = cosine_similarity(q_vec, AI_MATRIX).flatten()
             ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
             results = []
             for idx, score in ranked:
-                if score > 0.18: # threshold
+                if score > 0.05:
                     results.append(AI_KEYS_LIST[idx])
                 if len(results) >= top_k:
                     break
+            if not results and ranked:
+                for idx, score in ranked[:5]:
+                    if score >= 0:
+                        results.append(AI_KEYS_LIST[idx])
+                    if len(results) >= 5:
+                        break
             return results
-        except:
-            pass
-    # Fallback fuzzy if sklearn not available
+        except Exception as e:
+            print(f"AI Error: {e}")
+
     import difflib
-    clean_q = clean_name(query)
+    clean_q = clean_name(expanded_query)
     all_cleaned = list(CLEAN_CACHE.values())
-    close = difflib.get_close_matches(clean_q, all_cleaned, n=top_k, cutoff=0.4)
-    # map back to original keys
+    close = difflib.get_close_matches(clean_q, all_cleaned, n=top_k, cutoff=0.2)
     res_keys = []
     for c in close:
         for orig, cl in CLEAN_CACHE.items():
@@ -164,7 +190,6 @@ def save_db_file_id(key, file_id):
     if key not in RAM_DB: RAM_DB[key] = []
     if file_id not in RAM_DB[key]: RAM_DB[key].append(file_id)
     CLEAN_CACHE[key] = clean_name(key)
-    # Rebuild AI partially - rebuild full for simplicity (fast for <5k movies)
     if len(RAM_DB) % 20 == 0:
         build_ai_index()
     if MONGO_URL:
@@ -288,15 +313,14 @@ def channel_worker():
 
 Thread(target=channel_worker, daemon=True).start()
 
-# --- NEW WELCOME HANDLER WITH USERNAME ---
 @bot.message_handler(content_types=['new_chat_members'])
 def welcome_handler(message):
     for new_user in message.new_chat_members:
         try:
+            if new_user.is_bot: continue
             first_name = new_user.first_name or "Friend"
             username = f"@{new_user.username}" if new_user.username else first_name
             chat_title = message.chat.title or "Film4You"
-
             welcome_text = (
                 f"🎬 Welcome {first_name}! ✨\n\n"
                 f"Hey {username} 👋 Welcome to **{chat_title}** ❤️\n\n"
@@ -305,14 +329,7 @@ def welcome_handler(message):
                 f"📥 Example: `avengers`, `bhoot wali movie`, `pushpa`\n\n"
                 f"Enjoy! 🍿"
             )
-            bot.send_message(
-                message.chat.id,
-                welcome_text,
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🎬 Search Movies", callback_data="noop")]
-                ])
-            )
+            bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown")
         except Exception as e:
             print(f"Welcome Error: {e}")
 
@@ -356,7 +373,7 @@ def save_handler(message):
 def start_handler(message):
     name = message.from_user.first_name or "Friend"
     username = f"@{message.from_user.username}" if message.from_user.username else name
-    bot.send_message(message.chat.id, f"🎬✨ Film4you Bot Live! ✨🎬\n\n👋 Hello {name} ({username})! Welcome! ❤️\n\n🔍 Send Movie Name 👇\n🤖 AI Search Enabled - Wrong spelling also works!", parse_mode="Markdown")
+    bot.send_message(message.chat.id, f"🎬✨ Film4you Bot Live! ✨🎬\n\n👋 Hello {name} ({username})! Welcome! ❤️\n\n🔍 Send Movie Name 👇\n🤖 AI Search Enabled!", parse_mode="Markdown")
 
 @bot.message_handler(commands=['stats', 'Stats', 'STATS'])
 def stats_handler(message):
@@ -373,7 +390,7 @@ def stats_handler(message):
             db = load_db()
             total_movies = len(db)
             total_files = sum(len(v) for v in db.values())
-        bot.send_message(message.chat.id, f"📊 *Bot Stats*\n\nTotal Movies: {total_movies}\nTotal Files: {total_files}\nAI Indexed: {len(AI_KEYS_LIST)}\nAI Status: {'✅ Active' if AI_AVAILABLE else '⚠️ Fallback Mode'}\nStatus: ✅ Active", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"📊 *Bot Stats*\n\nTotal Movies: {total_movies}\nTotal Files: {total_files}\nAI Indexed: {len(AI_KEYS_LIST)}\nAI Status: {'✅ Active' if AI_AVAILABLE else '⚠️ Fallback'}\nStatus: ✅ Active", parse_mode="Markdown")
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Error: {e}")
 
@@ -385,7 +402,7 @@ def search_handler(message):
     if len(query) < 2: return
     if not RAM_DB: init_ram_cache()
     if not RAM_DB:
-        bot.send_message(message.chat.id, "⏳ Database connect ho rahi hai, thoda wait karo...")
+        bot.send_message(message.chat.id, "⏳ Database connect ho rahi hai, wait...")
         return
     clean_q = clean_name(query)
     if not clean_q or len(clean_q) < 2: clean_q = query.lower().strip()
@@ -398,7 +415,6 @@ def search_handler(message):
         elif len(clean_q) >= 4 and cleaned_key in clean_q: matched_keys.append(original_key)
         if len(matched_keys) >= 30: break
 
-    # --- AI FALLBACK IF NO MATCH ---
     ai_used = False
     if not matched_keys:
         ai_results = ai_smart_search(query, top_k=10)
@@ -411,9 +427,9 @@ def search_handler(message):
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
 
     if total == 0:
-        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*\n\nTry: `avengers`, `pushpa`, `bhoot`", parse_mode="Markdown")
+        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*\n\nTry exact name like `mumbai saga`", parse_mode="Markdown")
     else:
-        label = "🤖 AI Search" if ai_used else "🎬 Exact Search"
+        label = "🤖 AI Search" if ai_used else "🎬 Search"
         sent_msg = bot.send_message(message.chat.id, f"{label} - *{query}* 🔍\n\n{total} results - Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
 
     def fetch_tmdb_and_edit():
@@ -430,34 +446,3 @@ def search_handler(message):
                 else:
                     bot.edit_message_text(caption, message.chat.id, sent_msg.message_id, parse_mode="Markdown", reply_markup=markup2)
             except: pass
-        except: pass
-    Thread(target=fetch_tmdb_and_edit, daemon=True).start()
-
-@bot.callback_query_handler(func=lambda call: True)
-def cb(call):
-    chat_id = call.message.chat.id
-    db = RAM_DB if RAM_DB else load_db()
-    caps = load_caps()
-    if call.data == "noop": bot.answer_callback_query(call.id); return
-    if call.data.startswith("spage_"):
-        page = int(call.data.split("_")[1])
-        markup, total, total_pages = build_search_markup(chat_id, page)
-        if markup:
-            try: bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
-            except: pass
-        bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}"); return
-    if call.data.startswith("fpage_"):
-        page = int(call.data.split("_")[1])
-        key = FILE_CACHE.get(chat_id, {}).get("key", "")
-        markup, total, total_pages = build_file_markup(chat_id, key, page)
-        try: bot.edit_message_text(f"🎬 *{key.title()}* - {total} Files\n\n📄 Page {page+1}/{total_pages}", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-        except: pass
-        bot.answer_callback_query(call.id, f"Page {page+1}/{total_pages}"); return
-    if call.data.startswith("send_"):
-        _, key, idx = call.data.split("_"); idx = int(idx)
-        files = FILE_CACHE.get(chat_id, {}).get("files", [])
-        if idx < len(files):
-            fid = files[idx]
-            orig_cap = caps.get(fid, f"🎬 {key.title()} Part {idx+1}")
-            try: bot.send_document(chat_id, fid, caption=orig_cap)
-  
