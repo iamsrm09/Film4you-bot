@@ -25,10 +25,10 @@ AI_VECTORIZER = None
 AI_MATRIX = None
 AI_KEYS_LIST = []
 
-# Flask START IMMEDIATELY - Fix for Render
+# Flask START FIRST - Fix for Render
 app = Flask('')
 @app.route('/')
-def home(): return "Active ✅ AI Enabled - Booting..."
+def home(): return "Active ✅ AI Enabled"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -36,7 +36,6 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 Thread(target=run_flask, daemon=True).start()
-print("Flask thread started", flush=True)
 
 if MONGO_URL:
     try:
@@ -51,10 +50,6 @@ if MONGO_URL:
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TMDB_KEY = os.environ.get('TMDB_API_KEY')
 DATABASE_CHANNEL_ID = -1004341107282
-
-if not BOT_TOKEN:
-    print("ERROR: BOT_TOKEN missing in ENV!", flush=True)
-    time.sleep(10)
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True, num_threads=10)
 CHANNEL_QUEUE = queue.Queue()
@@ -84,8 +79,7 @@ def clean_name(text):
 
 def build_ai_index():
     global AI_VECTORIZER, AI_MATRIX, AI_KEYS_LIST
-    if not AI_AVAILABLE or not CLEAN_CACHE:
-        return
+    if not AI_AVAILABLE or not CLEAN_CACHE: return
     try:
         print(f"Building AI Index for {len(CLEAN_CACHE)} items...", flush=True)
         AI_KEYS_LIST = list(CLEAN_CACHE.keys())
@@ -122,48 +116,46 @@ def init_ram_cache():
         except Exception as e:
             print(f"RAM Error: {e}", flush=True)
 
-def ai_smart_search(query, top_k=10):
-    if not query or len(query) < 2: return []
-    q_lower = query.lower()
-    expanded_query = q_lower
-    genre_map = {
-        "bhoot": "horror scary ghost conjuring bhoot",
-        "darawni": "horror scary",
-        "darawani": "horror scary",
-        "horror": "horror scary ghost",
-        "pyar": "love romance",
-        "mohabbat": "love romance",
-        "romantic": "love romance",
-        "comedy": "comedy funny",
-        "hasane": "comedy funny",
-        "action": "action fight",
-        "ladai": "action fight",
-    }
-    for hindi, eng in genre_map.items():
-        if hindi in q_lower:
-            expanded_query += " " + eng
+# --- FIXED AI SEARCH - NO WRONG RESULTS ---
+def ai_smart_search(query, top_k=5):
+    if not query or len(query) < 2:
+        return []
+
+    q_lower = query.lower().strip()
+
+    # Remove useless words
+    stop_words = ["wali", "wala", "wale", "movie", "film", "bhejo", "do", "chahiye", "ki"]
+    for w in stop_words:
+        q_lower = q_lower.replace(w, " ")
+    q_lower = re.sub(r'\s+', ' ', q_lower).strip()
+
+    if len(q_lower) < 3:
+        return []
+
     if AI_AVAILABLE and AI_VECTORIZER is not None and AI_MATRIX is not None:
         try:
-            q_vec = AI_VECTORIZER.transform([clean_name(expanded_query)])
+            q_vec = AI_VECTORIZER.transform([clean_name(q_lower)])
             scores = cosine_similarity(q_vec, AI_MATRIX).flatten()
             ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+
             results = []
             for idx, score in ranked:
-                if score > 0.05:
+                # Only if similarity is >= 20%
+                if score >= 0.20:
                     results.append(AI_KEYS_LIST[idx])
-                if len(results) >= top_k: break
-            if not results and ranked:
-                for idx, score in ranked[:5]:
-                    if score >= 0:
-                        results.append(AI_KEYS_LIST[idx])
-                    if len(results) >= 5: break
+                if len(results) >= top_k:
+                    break
+
+            print(f"AI Query: '{query}' -> Best Score: {ranked[0][1] if ranked else 0} -> Found: {len(results)}", flush=True)
             return results
         except Exception as e:
             print(f"AI Error: {e}", flush=True)
+
+    # Fallback - High accuracy only
     import difflib
-    clean_q = clean_name(expanded_query)
+    clean_q = clean_name(q_lower)
     all_cleaned = list(CLEAN_CACHE.values())
-    close = difflib.get_close_matches(clean_q, all_cleaned, n=top_k, cutoff=0.2)
+    close = difflib.get_close_matches(clean_q, all_cleaned, n=top_k, cutoff=0.6)
     res_keys = []
     for c in close:
         for orig, cl in CLEAN_CACHE.items():
@@ -356,6 +348,7 @@ def search_handler(message):
         return
     clean_q = clean_name(query)
     if not clean_q or len(clean_q) < 2: clean_q = query.lower().strip()
+
     matched_keys = []
     for original_key, cleaned_key in CLEAN_CACHE.items():
         if not cleaned_key or len(cleaned_key) < 3: continue
@@ -363,26 +356,30 @@ def search_handler(message):
         elif clean_q in cleaned_key: matched_keys.append(original_key)
         elif len(clean_q) >= 4 and cleaned_key in clean_q: matched_keys.append(original_key)
         if len(matched_keys) >= 30: break
+
     ai_used = False
     if not matched_keys:
-        ai_results = ai_smart_search(query, top_k=10)
+        ai_results = ai_smart_search(query, top_k=5)
         if ai_results:
             matched_keys = ai_results
             ai_used = True
-    matched_keys.sort(key=lambda k: (0 if CLEAN_CACHE.get(k) == clean_q else 1))
+
     SEARCH_CACHE[message.chat.id] = {"keys": matched_keys, "query": query, "info": None}
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
+
     if total == 0:
-        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*", parse_mode="Markdown")
+        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*\n\nTry correct spelling like `ghost rider`, `ice age`", parse_mode="Markdown")
     else:
         label = "🤖 AI Search" if ai_used else "🎬 Search"
         sent_msg = bot.send_message(message.chat.id, f"{label} - *{query}* 🔍\n\n{total} results - Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
+
     def fetch_tmdb_and_edit():
         try:
             info = get_tmdb(query, query)
             if not info: return
             SEARCH_CACHE[message.chat.id]["info"] = info
             markup2, total2, total_pages2 = build_search_markup(message.chat.id, 0)
+            if total2 == 0: return
             caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 | 🎭 {info['genres']}\n📅 {info['date']}\n\n📝 {info['story']}\n\n🔍 {total2} results"
             try:
                 if info['poster']:
@@ -454,7 +451,6 @@ def cb(call):
             bot.answer_callback_query(call.id, "❌ File not found!", show_alert=True)
         return
 
-# --- MAIN LOOP ---
 print("Loading cache in background...", flush=True)
 Thread(target=init_ram_cache, daemon=True).start()
 
@@ -467,6 +463,4 @@ except: pass
 while True:
     try:
         bot.infinity_polling(timeout=60, long_polling_timeout=60)
-    except Exception as e:
-        print(f"Polling Error: {e}", flush=True)
-        time.sleep(5)
+    except Exception a
