@@ -1,4 +1,6 @@
-flask
 pyTelegramBotAPI
-requests
 pymongo
+flask
+requests
+scikit-learn
+numpy
