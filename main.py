@@ -6,7 +6,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 from pymongo import MongoClient
 
-print("Starting...", flush=True)
+print("Starting V-FINAL...", flush=True)
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -25,14 +25,12 @@ AI_VECTORIZER = None
 AI_MATRIX = None
 AI_KEYS_LIST = []
 
-# Flask START FIRST - Fix for Render
 app = Flask('')
 @app.route('/')
-def home(): return "Active ✅ AI Enabled"
+def home(): return "Active ✅ V-FINAL"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    print(f"Flask starting on port {port}", flush=True)
     app.run(host='0.0.0.0', port=port)
 
 Thread(target=run_flask, daemon=True).start()
@@ -81,12 +79,11 @@ def build_ai_index():
     global AI_VECTORIZER, AI_MATRIX, AI_KEYS_LIST
     if not AI_AVAILABLE or not CLEAN_CACHE: return
     try:
-        print(f"Building AI Index for {len(CLEAN_CACHE)} items...", flush=True)
         AI_KEYS_LIST = list(CLEAN_CACHE.keys())
         corpus = [CLEAN_CACHE[k] for k in AI_KEYS_LIST]
         AI_VECTORIZER = TfidfVectorizer(stop_words='english')
         AI_MATRIX = AI_VECTORIZER.fit_transform(corpus)
-        print(f"AI Index Built: {len(AI_KEYS_LIST)} movies", flush=True)
+        print(f"AI Index Built: {len(AI_KEYS_LIST)}", flush=True)
     except Exception as e:
         print(f"AI Build Error: {e}", flush=True)
 
@@ -94,7 +91,7 @@ def init_ram_cache():
     global RAM_DB, CLEAN_CACHE
     if MONGO_URL:
         try:
-            print("Loading DB into RAM...", flush=True)
+            print("Loading DB...", flush=True)
             temp = {}
             temp_clean = {}
             for doc in movies_col.find():
@@ -111,51 +108,36 @@ def init_ram_cache():
                 temp_clean[key] = cleaned
             RAM_DB = temp
             CLEAN_CACHE = temp_clean
-            print(f"Loaded: {len(RAM_DB)} movies", flush=True)
+            print(f"Loaded: {len(RAM_DB)}", flush=True)
             build_ai_index()
         except Exception as e:
             print(f"RAM Error: {e}", flush=True)
 
-# --- FIXED AI SEARCH - NO WRONG RESULTS ---
 def ai_smart_search(query, top_k=5):
-    if not query or len(query) < 2:
-        return []
-
-    q_lower = query.lower().strip()
-
-    # Remove useless words
-    stop_words = ["wali", "wala", "wale", "movie", "film", "bhejo", "do", "chahiye", "ki"]
-    for w in stop_words:
-        q_lower = q_lower.replace(w, " ")
-    q_lower = re.sub(r'\s+', ' ', q_lower).strip()
-
-    if len(q_lower) < 3:
-        return []
-
+    if not query or len(query) < 2: return []
+    q = query.lower().strip()
+    for w in ["wali", "wala", "wale", "movie", "film"]:
+        q = q.replace(w, " ")
+    q = re.sub(r'\s+', ' ', q).strip()
+    if len(q) < 3: return []
     if AI_AVAILABLE and AI_VECTORIZER is not None and AI_MATRIX is not None:
         try:
-            q_vec = AI_VECTORIZER.transform([clean_name(q_lower)])
+            q_vec = AI_VECTORIZER.transform([clean_name(q)])
             scores = cosine_similarity(q_vec, AI_MATRIX).flatten()
             ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
-
             results = []
             for idx, score in ranked:
-                # Only if similarity is >= 20%
-                if score >= 0.20:
+                if score >= 0.35:
                     results.append(AI_KEYS_LIST[idx])
-                if len(results) >= top_k:
-                    break
-
-            print(f"AI Query: '{query}' -> Best Score: {ranked[0][1] if ranked else 0} -> Found: {len(results)}", flush=True)
+                if len(results) >= top_k: break
+            print(f"AI '{query}' -> top score {ranked[0][1] if ranked else 0:.3f} -> {len(results)} results", flush=True)
             return results
         except Exception as e:
-            print(f"AI Error: {e}", flush=True)
-
-    # Fallback - High accuracy only
+            print(f"AI Error {e}", flush=True)
     import difflib
-    clean_q = clean_name(q_lower)
+    clean_q = clean_name(q)
     all_cleaned = list(CLEAN_CACHE.values())
-    close = difflib.get_close_matches(clean_q, all_cleaned, n=top_k, cutoff=0.6)
+    close = difflib.get_close_matches(clean_q, all_cleaned, n=top_k, cutoff=0.65)
     res_keys = []
     for c in close:
         for orig, cl in CLEAN_CACHE.items():
@@ -167,19 +149,14 @@ def ai_smart_search(query, top_k=5):
 def load_db():
     if RAM_DB: return RAM_DB
     return {}
-
 def save_db_file_id(key, file_id):
     if not key or len(key) < 3: return
     if key not in RAM_DB: RAM_DB[key] = []
     if file_id not in RAM_DB[key]: RAM_DB[key].append(file_id)
     CLEAN_CACHE[key] = clean_name(key)
-    if len(RAM_DB) % 50 == 0:
-        Thread(target=build_ai_index, daemon=True).start()
     if MONGO_URL:
-        try:
-            movies_col.update_one({"_id": key}, {"$addToSet": {"files": file_id}}, upsert=True)
+        try: movies_col.update_one({"_id": key}, {"$addToSet": {"files": file_id}}, upsert=True)
         except: pass
-
 def load_caps():
     if MONGO_URL:
         try:
@@ -189,13 +166,10 @@ def load_caps():
             return data
         except: return {}
     return {}
-
 def save_caps_single(file_id, caption):
     if MONGO_URL:
-        try:
-            caps_col.update_one({"_id": file_id}, {"$set": {"caption": caption}}, upsert=True)
+        try: caps_col.update_one({"_id": file_id}, {"$set": {"caption": caption}}, upsert=True)
         except: pass
-
 def get_tmdb(query, original_text=""):
     if not TMDB_KEY: return None
     cache_key = clean_name(query)[:40]
@@ -226,7 +200,6 @@ def get_tmdb(query, original_text=""):
         TMDB_CACHE[cache_key] = res
         return res
     except: return None
-
 def build_search_markup(chat_id, page=0):
     data = SEARCH_CACHE.get(chat_id)
     if not data: return None,0,0
@@ -246,11 +219,10 @@ def build_search_markup(chat_id, page=0):
     nav.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"spage_{page+1}"))
     if total > PAGE_SIZE: markup.row(*nav)
-    if page == 0 and data.get("info"):
+    if page == 0 and data.get("info") and total > 0:
         info = data["info"]
         markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"), InlineKeyboardButton("📍 Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}"))
     return markup, total, total_pages
-
 def build_file_markup(chat_id, key, page=0):
     files = FILE_CACHE.get(chat_id, {}).get("files", [])
     total = len(files)
@@ -267,7 +239,6 @@ def build_file_markup(chat_id, key, page=0):
     markup.row(*nav)
     markup.add(InlineKeyboardButton(f"📥 Send All {total} Files", callback_data=f"sendall_{key}"))
     return markup, total, total_pages
-
 def channel_worker():
     while True:
         try:
@@ -288,9 +259,7 @@ def channel_worker():
             time.sleep(3.5)
             CHANNEL_QUEUE.task_done()
         except: time.sleep(3)
-
 Thread(target=channel_worker, daemon=True).start()
-
 @bot.message_handler(content_types=['new_chat_members'])
 def welcome_handler(message):
     for new_user in message.new_chat_members:
@@ -303,7 +272,6 @@ def welcome_handler(message):
             bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown")
         except Exception as e:
             print(f"Welcome Error: {e}", flush=True)
-
 @bot.message_handler(content_types=['video', 'document'])
 def save_handler(message):
     if is_duplicate(message.message_id): return
@@ -322,12 +290,10 @@ def save_handler(message):
     save_caps_single(file_id, raw_caption)
     db = RAM_DB if RAM_DB else load_db()
     bot.reply_to(message, f"✅ Saved! {c_name} | Files: {len(db.get(c_name, []))}")
-
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     name = message.from_user.first_name or "Friend"
     bot.send_message(message.chat.id, f"🎬✨ Film4you Live! ✨🎬\n\n👋 Hello {name}! Welcome! ❤️\n\n🔍 Send Movie Name 👇\n🤖 AI Enabled!", parse_mode="Markdown")
-
 @bot.message_handler(commands=['stats'])
 def stats_handler(message):
     try:
@@ -336,7 +302,6 @@ def stats_handler(message):
         bot.send_message(message.chat.id, f"📊 *Stats*\n\nMovies: {total_movies}\nFiles: {total_files}\nAI: {len(AI_KEYS_LIST)}\nStatus: ✅ Active", parse_mode="Markdown")
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ {e}")
-
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
     if message.text.startswith('/'): return
@@ -348,7 +313,6 @@ def search_handler(message):
         return
     clean_q = clean_name(query)
     if not clean_q or len(clean_q) < 2: clean_q = query.lower().strip()
-
     matched_keys = []
     for original_key, cleaned_key in CLEAN_CACHE.items():
         if not cleaned_key or len(cleaned_key) < 3: continue
@@ -356,41 +320,38 @@ def search_handler(message):
         elif clean_q in cleaned_key: matched_keys.append(original_key)
         elif len(clean_q) >= 4 and cleaned_key in clean_q: matched_keys.append(original_key)
         if len(matched_keys) >= 30: break
-
     ai_used = False
     if not matched_keys:
         ai_results = ai_smart_search(query, top_k=5)
         if ai_results:
             matched_keys = ai_results
             ai_used = True
-
     SEARCH_CACHE[message.chat.id] = {"keys": matched_keys, "query": query, "info": None}
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
-
     if total == 0:
-        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*\n\nTry correct spelling like `ghost rider`, `ice age`", parse_mode="Markdown")
+        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*", parse_mode="Markdown")
     else:
         label = "🤖 AI Search" if ai_used else "🎬 Search"
         sent_msg = bot.send_message(message.chat.id, f"{label} - *{query}* 🔍\n\n{total} results - Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
-
     def fetch_tmdb_and_edit():
         try:
             info = get_tmdb(query, query)
             if not info: return
-            SEARCH_CACHE[message.chat.id]["info"] = info
-            markup2, total2, total_pages2 = build_search_markup(message.chat.id, 0)
-            if total2 == 0: return
-            caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 | 🎭 {info['genres']}\n📅 {info['date']}\n\n📝 {info['story']}\n\n🔍 {total2} results"
-            try:
-                if info['poster']:
-                    bot.delete_message(message.chat.id, sent_msg.message_id)
-                    bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup2)
-                else:
-                    bot.edit_message_text(caption, message.chat.id, sent_msg.message_id, parse_mode="Markdown", reply_markup=markup2)
-            except: pass
+            # Only edit if we have results
+            if SEARCH_CACHE[message.chat.id]["keys"]:
+                SEARCH_CACHE[message.chat.id]["info"] = info
+                markup2, total2, total_pages2 = build_search_markup(message.chat.id, 0)
+                if total2 == 0: return
+                caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 | 🎭 {info['genres']}\n📅 {info['date']}\n\n📝 {info['story']}\n\n🔍 {total2} results"
+                try:
+                    if info['poster']:
+                        bot.delete_message(message.chat.id, sent_msg.message_id)
+                        bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup2)
+                    else:
+                        bot.edit_message_text(caption, message.chat.id, sent_msg.message_id, parse_mode="Markdown", reply_markup=markup2)
+                except: pass
         except: pass
     Thread(target=fetch_tmdb_and_edit, daemon=True).start()
-
 @bot.callback_query_handler(func=lambda call: True)
 def cb(call):
     chat_id = call.message.chat.id
@@ -450,17 +411,16 @@ def cb(call):
         else:
             bot.answer_callback_query(call.id, "❌ File not found!", show_alert=True)
         return
-
 print("Loading cache in background...", flush=True)
 Thread(target=init_ram_cache, daemon=True).start()
-
 print("Bot polling started...", flush=True)
 try:
     bot.remove_webhook()
     time.sleep(1)
 except: pass
-
 while True:
     try:
         bot.infinity_polling(timeout=60, long_polling_timeout=60)
-    except Exception a
+    except Exception as e:
+        print(f"Polling Error: {e}", flush=True)
+        time.sleep(5)
