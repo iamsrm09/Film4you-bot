@@ -6,7 +6,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 from pymongo import MongoClient
 
-print("Starting V-FINAL3 TYPO FIX...", flush=True)
+print("Starting V-FINAL3 FIXED2...", flush=True)
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -27,7 +27,7 @@ AI_KEYS_LIST = []
 
 app = Flask('')
 @app.route('/')
-def home(): return "Active ✅ V-FINAL3"
+def home(): return "Active OK"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -81,7 +81,6 @@ def build_ai_index():
     try:
         AI_KEYS_LIST = list(CLEAN_CACHE.keys())
         corpus = [CLEAN_CACHE[k] for k in AI_KEYS_LIST]
-        # CHAR N-GRAM = typo + spiderman/spider-man fix
         AI_VECTORIZER = TfidfVectorizer(analyzer='char_wb', ngram_range=(3,5))
         AI_MATRIX = AI_VECTORIZER.fit_transform(corpus)
         print(f"AI Index Built CHAR: {len(AI_KEYS_LIST)}", flush=True)
@@ -128,7 +127,7 @@ def ai_smart_search(query, top_k=10):
             ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
             results = []
             for idx, score in ranked:
-                if score >= 0.25: # char model pe 0.25 enough hai
+                if score >= 0.25:
                     results.append(AI_KEYS_LIST[idx])
                 if len(results) >= top_k: break
             print(f"AI '{query}' -> top {ranked[0][1] if ranked else 0:.3f} -> {len(results)} results", flush=True)
@@ -322,25 +321,20 @@ def search_handler(message):
         return
     clean_q = clean_name(query)
     if not clean_q or len(clean_q) < 2: clean_q = query.lower().strip()
-
     matched_keys = []
-    # Step 1: Direct contains search
     for original_key, cleaned_key in CLEAN_CACHE.items():
         if not cleaned_key or len(cleaned_key) < 3: continue
         if clean_q == cleaned_key: matched_keys.append(original_key)
         elif clean_q in cleaned_key: matched_keys.append(original_key)
         elif len(clean_q) >= 4 and cleaned_key in clean_q: matched_keys.append(original_key)
         if len(matched_keys) >= 30: break
-
     ai_used = False
-    # Step 2: AI char search - handles spiderman/spider-man, typo
     if not matched_keys:
         ai_results = ai_smart_search(query, top_k=10)
         if ai_results:
             matched_keys = ai_results
             ai_used = True
         else:
-            # Step 3: Last try - split words
             for original_key, cleaned_key in CLEAN_CACHE.items():
                 if any(word in cleaned_key for word in clean_q.split() if len(word)>=4):
                     if original_key not in matched_keys:
@@ -348,11 +342,10 @@ def search_handler(message):
                 if len(matched_keys) >= 10: break
             if matched_keys:
                 ai_used = True
-
     SEARCH_CACHE[message.chat.id] = {"keys": matched_keys, "query": query, "info": None}
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
     if total == 0:
-        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*\n\nTry: `spider man`, `avengers`", parse_mode="Markdown")
+        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*", parse_mode="Markdown")
     else:
         label = "🤖 AI Search" if ai_used else "🎬 Search"
         sent_msg = bot.send_message(message.chat.id, f"{label} - *{query}* 🔍\n\n{total} results - Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
@@ -444,4 +437,11 @@ def cb(call):
             cache = FILE_CACHE.get(chat_id, {})
             files = cache.get("files", [])
             key = cache.get("key", "")
-            bot.answer_callback_query(call.id, f"Sending {len(fil
+            count = len(files)
+            bot.answer_callback_query(call.id, f"Sending {count} files")
+            for fid in files:
+                orig_cap = caps.get(fid, f"🎬 {key.title()} ✨")
+                time.sleep(0.8)
+                try: bot.send_document(chat_id, fid, caption=orig_cap)
+                except:
+                    tr
