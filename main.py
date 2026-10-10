@@ -6,7 +6,6 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from urllib.parse import quote_plus
 from pymongo import MongoClient
 
-# --- AI IMPORTS ---
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
@@ -52,13 +51,16 @@ FILE_CACHE = {}
 PAGE_SIZE = 5
 
 def is_duplicate(msg_id):
-    if msg_id in PROCESSED: return True
+    if msg_id in PROCESSED:
+        return True
     PROCESSED.add(msg_id)
-    if len(PROCESSED) > 300: PROCESSED.clear()
+    if len(PROCESSED) > 300:
+        PROCESSED.clear()
     return False
 
 def clean_name(text):
-    if not text: return ""
+    if not text:
+        return ""
     text = text.split('\n')[0]
     text = re.sub(r'@\w+|Bt_Movies_Hd|Filmsclub|Film4you', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\[.*?\]', '', text)
@@ -79,7 +81,8 @@ def init_ram_cache():
             for doc in movies_col.find():
                 key = doc['_id']
                 cleaned = clean_name(key)
-                if not cleaned or len(cleaned) < 3: continue
+                if not cleaned or len(cleaned) < 3:
+                    continue
                 if '[' in key or ']' in key:
                     new_key = cleaned
                     if new_key not in temp:
@@ -128,9 +131,6 @@ def ai_smart_search(query, top_k=10):
         "adventure": "adventure",
         "sci": "science fiction",
         "jadu": "magic fantasy",
-        "wala": "",
-        "wali": "",
-        "movie": "",
     }
     for hindi, eng in genre_map.items():
         if hindi in q_lower:
@@ -170,33 +170,42 @@ def ai_smart_search(query, top_k=10):
     return res_keys
 
 def load_db():
-    if RAM_DB: return RAM_DB
+    if RAM_DB:
+        return RAM_DB
     if MONGO_URL:
         try:
             data = {}
             for doc in movies_col.find():
                 cleaned = clean_name(doc['_id'])
-                if not cleaned or len(cleaned) < 3: continue
+                if not cleaned or len(cleaned) < 3:
+                    continue
                 data[doc['_id']] = doc.get('files', [])
             return data
-        except: return {}
-    if not os.path.exists("database.json"): return {}
+        except:
+            return {}
+    if not os.path.exists("database.json"):
+        return {}
     try:
-        with open("database.json",'r') as f: return json.load(f)
-    except: return {}
+        with open("database.json",'r') as f:
+            return json.load(f)
+    except:
+        return {}
 
 def save_db_file_id(key, file_id):
-    if not key or len(key) < 3: return
-    if key not in RAM_DB: RAM_DB[key] = []
-    if file_id not in RAM_DB[key]: RAM_DB[key].append(file_id)
+    if not key or len(key) < 3:
+        return
+    if key not in RAM_DB:
+        RAM_DB[key] = []
+    if file_id not in RAM_DB[key]:
+        RAM_DB[key].append(file_id)
     CLEAN_CACHE[key] = clean_name(key)
     if len(RAM_DB) % 20 == 0:
         build_ai_index()
     if MONGO_URL:
         try:
             movies_col.update_one({"_id": key}, {"$addToSet": {"files": file_id}}, upsert=True)
-        except: pass
-    return
+        except:
+            pass
 
 def load_caps():
     if MONGO_URL:
@@ -205,33 +214,43 @@ def load_caps():
             for doc in caps_col.find():
                 data[doc['_id']] = doc.get('caption','')
             return data
-        except: return {}
-    if not os.path.exists("captions.json"): return {}
+        except:
+            return {}
+    if not os.path.exists("captions.json"):
+        return {}
     try:
-        with open("captions.json",'r') as f: return json.load(f)
-    except: return {}
+        with open("captions.json",'r') as f:
+            return json.load(f)
+    except:
+        return {}
 
 def save_caps_single(file_id, caption):
     if MONGO_URL:
         try:
             caps_col.update_one({"_id": file_id}, {"$set": {"caption": caption}}, upsert=True)
-        except: pass
-    return
+        except:
+            pass
 
 def get_tmdb(query, original_text=""):
-    if not TMDB_KEY: return None
+    if not TMDB_KEY:
+        return None
     cache_key = clean_name(query)[:40]
-    if cache_key in TMDB_CACHE: return TMDB_CACHE[cache_key]
+    if cache_key in TMDB_CACHE:
+        return TMDB_CACHE[cache_key]
     q = clean_name(query)
-    if len(q) < 2: q = query
+    if len(q) < 2:
+        q = query
     try:
         url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={quote_plus(q)}"
         r = requests.get(url, timeout=5).json()
-        if not r.get('results'): return None
+        if not r.get('results'):
+            return None
         results = [x for x in r['results'] if x.get('media_type') in ['movie','tv']][:3]
-        if not results: return None
+        if not results:
+            return None
         best_item = results[0]
-        mtype = best_item['media_type']; mid = best_item['id']
+        mtype = best_item['media_type']
+        mid = best_item['id']
         d = requests.get(f"https://api.themoviedb.org/3/{mtype}/{mid}?api_key={TMDB_KEY}", timeout=5).json()
         title = d.get('title') or d.get('name') or q
         poster_path = best_item.get('poster_path')
@@ -247,16 +266,19 @@ def get_tmdb(query, original_text=""):
         res = {"title":title,"year":year_out,"rating":rating,"genres":genres,"runtime":runtime,"date":date,"poster":poster,"story":story,"type":mtype}
         TMDB_CACHE[cache_key] = res
         return res
-    except: return None
+    except:
+        return None
 
 def build_search_markup(chat_id, page=0):
     data = SEARCH_CACHE.get(chat_id)
-    if not data: return None,0,0
+    if not data:
+        return None,0,0
     matched_keys = data["keys"]
     db = RAM_DB if RAM_DB else load_db()
     total = len(matched_keys)
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE or 1
-    start = page * PAGE_SIZE; end = start + PAGE_SIZE
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
     page_keys = matched_keys[start:end]
     markup = InlineKeyboardMarkup(row_width=1)
     for key in page_keys:
@@ -264,10 +286,13 @@ def build_search_markup(chat_id, page=0):
         btn_name = key.title()[:35]
         markup.add(InlineKeyboardButton(f"📥 {btn_name} ({len(files)} Files)", callback_data=f"get_{key}_0"))
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"spage_{page-1}"))
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"spage_{page-1}"))
     nav.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"spage_{page+1}"))
-    if total > PAGE_SIZE: markup.row(*nav)
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"spage_{page+1}"))
+    if total > PAGE_SIZE:
+        markup.row(*nav)
     if page == 0 and data.get("info"):
         info = data["info"]
         markup.row(InlineKeyboardButton("▶️ Trailer", url=f"https://www.youtube.com/results?search_query={quote_plus(info['title'])}+trailer"), InlineKeyboardButton("📍 Watch", url=f"https://www.justwatch.com/in/search?q={quote_plus(info['title'])}"))
@@ -277,15 +302,18 @@ def build_file_markup(chat_id, key, page=0):
     files = FILE_CACHE.get(chat_id, {}).get("files", [])
     total = len(files)
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE or 1
-    start = page * PAGE_SIZE; end = start + PAGE_SIZE
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
     page_files = files[start:end]
     markup = InlineKeyboardMarkup(row_width=1)
     for idx, fid in enumerate(page_files, start=start+1):
         markup.add(InlineKeyboardButton(f"📦 Part {idx} - Download", callback_data=f"send_{key}_{idx-1}"))
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"fpage_{page-1}"))
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"fpage_{page-1}"))
     nav.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"fpage_{page+1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"fpage_{page+1}"))
     markup.row(*nav)
     markup.add(InlineKeyboardButton(f"📥 Send All {total} Files", callback_data=f"sendall_{key}"))
     return markup, total, total_pages
@@ -309,7 +337,8 @@ def channel_worker():
                     CHANNEL_QUEUE.put((file_id, db_caption, is_video, thumb_path))
             time.sleep(3.5)
             CHANNEL_QUEUE.task_done()
-        except: time.sleep(3)
+        except:
+            time.sleep(3)
 
 Thread(target=channel_worker, daemon=True).start()
 
@@ -317,7 +346,8 @@ Thread(target=channel_worker, daemon=True).start()
 def welcome_handler(message):
     for new_user in message.new_chat_members:
         try:
-            if new_user.is_bot: continue
+            if new_user.is_bot:
+                continue
             first_name = new_user.first_name or "Friend"
             username = f"@{new_user.username}" if new_user.username else first_name
             chat_title = message.chat.title or "Film4You"
@@ -335,14 +365,18 @@ def welcome_handler(message):
 
 @bot.message_handler(content_types=['video', 'document'])
 def save_handler(message):
-    if is_duplicate(message.message_id): return
+    if is_duplicate(message.message_id):
+        return
     raw_caption = message.caption or ""
     media_group = getattr(message, 'media_group_id', None)
     if media_group:
-        if raw_caption: ALBUM_CACHE[media_group] = raw_caption
-        elif media_group in ALBUM_CACHE: raw_caption = ALBUM_CACHE[media_group]
+        if raw_caption:
+            ALBUM_CACHE[media_group] = raw_caption
+        elif media_group in ALBUM_CACHE:
+            raw_caption = ALBUM_CACHE[media_group]
     if not raw_caption:
-        bot.reply_to(message, "❌ Caption me movie name likho! 🎬"); return
+        bot.reply_to(message, "❌ Caption me movie name likho! 🎬")
+        return
     file_id = message.video.file_id if message.video else message.document.file_id
     c_name = clean_name(raw_caption)
     if not c_name or len(c_name) < 3:
@@ -359,8 +393,10 @@ def save_handler(message):
             try:
                 resp = requests.get(info['poster'], timeout=10)
                 thumb_path = f"/tmp/{file_id}.jpg"
-                with open(thumb_path, 'wb') as f: f.write(resp.content)
-            except: thumb_path = None
+                with open(thumb_path, 'wb') as f:
+                    f.write(resp.content)
+            except:
+                thumb_path = None
         if info:
             db_caption = f"{raw_caption}\n\n🎬 {info['title']} ({info['year']}) | ⭐ {info['rating']}/10"
         else:
@@ -396,24 +432,34 @@ def stats_handler(message):
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def search_handler(message):
-    if message.text.startswith('/'): return
-    if is_duplicate(message.message_id): return
+    if message.text.startswith('/'):
+        return
+    if is_duplicate(message.message_id):
+        return
     query = message.text.strip()
-    if len(query) < 2: return
-    if not RAM_DB: init_ram_cache()
+    if len(query) < 2:
+        return
+    if not RAM_DB:
+        init_ram_cache()
     if not RAM_DB:
         bot.send_message(message.chat.id, "⏳ Database connect ho rahi hai, wait...")
         return
     clean_q = clean_name(query)
-    if not clean_q or len(clean_q) < 2: clean_q = query.lower().strip()
+    if not clean_q or len(clean_q) < 2:
+        clean_q = query.lower().strip()
 
     matched_keys = []
     for original_key, cleaned_key in CLEAN_CACHE.items():
-        if not cleaned_key or len(cleaned_key) < 3: continue
-        if clean_q == cleaned_key: matched_keys.append(original_key)
-        elif clean_q in cleaned_key: matched_keys.append(original_key)
-        elif len(clean_q) >= 4 and cleaned_key in clean_q: matched_keys.append(original_key)
-        if len(matched_keys) >= 30: break
+        if not cleaned_key or len(cleaned_key) < 3:
+            continue
+        if clean_q == cleaned_key:
+            matched_keys.append(original_key)
+        elif clean_q in cleaned_key:
+            matched_keys.append(original_key)
+        elif len(clean_q) >= 4 and cleaned_key in clean_q:
+            matched_keys.append(original_key)
+        if len(matched_keys) >= 30:
+            break
 
     ai_used = False
     if not matched_keys:
@@ -427,7 +473,7 @@ def search_handler(message):
     markup, total, total_pages = build_search_markup(message.chat.id, 0)
 
     if total == 0:
-        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*\n\nTry exact name like `mumbai saga`", parse_mode="Markdown")
+        sent_msg = bot.send_message(message.chat.id, f"❌ No results for *{query}*", parse_mode="Markdown")
     else:
         label = "🤖 AI Search" if ai_used else "🎬 Search"
         sent_msg = bot.send_message(message.chat.id, f"{label} - *{query}* 🔍\n\n{total} results - Page 1/{total_pages} 👇", parse_mode="Markdown", reply_markup=markup)
@@ -435,7 +481,8 @@ def search_handler(message):
     def fetch_tmdb_and_edit():
         try:
             info = get_tmdb(query, query)
-            if not info: return
+            if not info:
+                return
             SEARCH_CACHE[message.chat.id]["info"] = info
             markup2, total2, total_pages2 = build_search_markup(message.chat.id, 0)
             caption = f"🎬 *{info['title']} ({info['year']})* - {info['type'].upper()} ✨\n⭐ {info['rating']}/10 | 🎭 {info['genres']} | ⏱️ {info['runtime']}\n📅 {info['date']}\n\n📝 {info['story']}\n\n🔍 {total2} results - Page 1/{total_pages2}"
@@ -445,4 +492,26 @@ def search_handler(message):
                     bot.send_photo(message.chat.id, info['poster'], caption=caption, parse_mode="Markdown", reply_markup=markup2)
                 else:
                     bot.edit_message_text(caption, message.chat.id, sent_msg.message_id, parse_mode="Markdown", reply_markup=markup2)
-            except: pass
+            except:
+                pass
+        except:
+            pass
+    Thread(target=fetch_tmdb_and_edit, daemon=True).start()
+
+@bot.callback_query_handler(func=lambda call: True)
+def cb(call):
+    chat_id = call.message.chat.id
+    db = RAM_DB if RAM_DB else load_db()
+    caps = load_caps()
+    if call.data == "noop":
+        bot.answer_callback_query(call.id)
+        return
+    if call.data.startswith("spage_"):
+        page = int(call.data.split("_")[1])
+        markup, total, total_pages = build_search_markup(chat_id, page)
+        if markup:
+            try:
+                bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
+            except:
+                pass
+        bot.answer_callback_que
